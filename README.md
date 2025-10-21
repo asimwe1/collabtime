@@ -304,8 +304,8 @@ If you use this software in your research, please cite:
 ```bibtex
 @software{warehouse_dsm,
   title={Warehouse Distributed Shared Memory System},
-  author={Warehouse DSM Team},
-  year={2024},
+  author={Harnes Team},
+  year={2025},
   url={https://github.com/warehouse-dsm/warehouse-dsm}
 }
 ```
@@ -318,7 +318,7 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 - **Issues**: [GitHub Issues](https://github.com/warehouse-dsm/warehouse-dsm/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/warehouse-dsm/warehouse-dsm/discussions)
-- **Email**: warehouse-dsm@example.com
+- **Email**: bkubwimana@berkeley.edu
 
 ## Acknowledgments
 
