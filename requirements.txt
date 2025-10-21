@@ -1,0 +1,53 @@
+# Warehouse Distributed Shared Memory System
+# Python package requirements
+
+# Core simulation framework
+mesa                       # Agent-based modeling framework
+networkx                   # Graph operations and algorithms
+numpy                      # Numerical computing
+pandas                     # Data analysis and manipulation
+altair                     # Declarative visualization (for Mesa/Solara)
+
+# Visualization and plotting
+matplotlib                 # Plotting and visualization
+seaborn                    # Statistical data visualization
+plotly                     # Interactive plotting (optional)
+dash                       # Plotly Dash for real-time updates without flicker
+
+# Configuration and data handling
+pyyaml                     # YAML configuration parsing
+jsonschema                 # JSON schema validation
+toml                       # TOML configuration support
+
+# Data structures and algorithms
+scipy                      # Scientific computing
+scikit-learn               # Machine learning algorithms (for clustering)
+sortedcontainers           # Efficient sorted data structures
+
+
+# Lingua Franca integration
+# Note: LF toolchain must be installed separately
+# See: https://github.com/lf-lang/lingua-franca
+
+# Development and testing
+pytest                    # Testing framework
+pytest-cov                # Coverage reporting
+pytest-asyncio            # Async testing support
+black                     # Code formatting
+flake8                    # Linting
+mypy                      # Type checking
+
+# Documentation
+sphinx                    # Documentation generation
+sphinx-rtd-theme          # Read the Docs theme
+sphinx-autodoc-typehints  # Type hint documentation
+
+# Performance monitoring and profiling
+psutil                    # System and process utilities
+memory-profiler           # Memory usage profiling
+line-profiler             # Line-by-line profiling
+
+# Optional: Advanced features (may not support latest Python; enable if needed)
+# numba                   # JIT compilation for performance
+cython                    # C extensions for performance
+redis                     # Redis client for distributed caching

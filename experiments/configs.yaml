@@ -1,0 +1,189 @@
+# Warehouse DSM Experiment Configurations
+# Parameterized experiments for testing distributed shared memory system
+
+experiments:
+  # Small scale test
+  baseline_small:
+    name: "Baseline Small"
+    description: "Small warehouse with basic settings for validation"
+    warehouse:
+      size: [10, 10]  # 10x10 grid
+      storage_regions:
+        - {center: [2, 2], radius: 2}
+        - {center: [7, 7], radius: 2}
+      sortation_regions:
+        - {center: [5, 1], radius: 1}
+        - {center: [5, 8], radius: 1}
+    agents:
+      count: 4
+      initial_positions: [[1, 1], [8, 8], [1, 8], [8, 1]]
+    dsm:
+      partition_strategy: "spatial"
+      memory_owners: 2
+      halo_radius: 2
+      gossip_interval: 150  # ms
+      aoi_threshold: 1000   # ms (1 second)
+    tasks:
+      arrival_rate: 0.2      # tasks per second
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 2, 1]  # weights for task type generation
+    simulation:
+      duration: 600          # 10 minutes
+      step_interval: 50      # ms per step
+
+  # Medium scale test  
+  scaling_medium:
+    name: "Medium Scale"
+    description: "Medium warehouse testing scalability"
+    warehouse:
+      size: [20, 15]
+      storage_regions:
+        - {center: [5, 3], radius: 3}
+        - {center: [15, 3], radius: 3}
+        - {center: [5, 11], radius: 3}
+        - {center: [15, 11], radius: 3}
+      sortation_regions:
+        - {center: [10, 2], radius: 2}
+        - {center: [10, 12], radius: 2}
+    agents:
+      count: 8
+      initial_positions: "random"  # auto-generate
+    dsm:
+      partition_strategy: "spectral"
+      memory_owners: 4
+      halo_radius: 3
+      gossip_interval: 100
+      aoi_threshold: 800
+    tasks:
+      arrival_rate: 0.5
+      types: ["pickup", "delivery", "sort", "maintenance"]
+      priorities: [2, 3, 2, 1]
+    simulation:
+      duration: 600  # 10 minutes
+      step_interval: 50
+
+  # High load stress test
+  stress_high_load:
+    name: "High Load Stress Test"
+    description: "High task arrival rate with many agents"
+    warehouse:
+      size: [25, 20]
+      storage_regions:
+        - {center: [6, 5], radius: 4}
+        - {center: [19, 5], radius: 4}
+        - {center: [6, 15], radius: 4}
+        - {center: [19, 15], radius: 4}
+      sortation_regions:
+        - {center: [12, 3], radius: 2}
+        - {center: [12, 17], radius: 2}
+    agents:
+      count: 12
+      initial_positions: "random"
+    dsm:
+      partition_strategy: "spatial"
+      memory_owners: 6
+      halo_radius: 2
+      gossip_interval: 75   # faster gossip
+      aoi_threshold: 500    # stricter freshness
+    tasks:
+      arrival_rate: 1.2     # high task rate
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 900  # 15 minutes
+      step_interval: 50
+
+  # Fault tolerance test
+  fault_tolerance:
+    name: "Fault Tolerance"
+    description: "Test system resilience with agent failures"
+    warehouse:
+      size: [15, 15]
+      storage_regions:
+        - {center: [4, 4], radius: 3}
+        - {center: [11, 11], radius: 3}
+      sortation_regions:
+        - {center: [7, 2], radius: 1}
+        - {center: [7, 13], radius: 1}
+    agents:
+      count: 6
+      initial_positions: "random"
+      failure_schedule:  # agents to fail at specific times
+        - {agent_id: 2, time: 180, duration: 60}   # agent 2 fails at 3min for 1min
+        - {agent_id: 4, time: 300, duration: 120}  # agent 4 fails at 5min for 2min
+    dsm:
+      partition_strategy: "spectral"
+      memory_owners: 3
+      halo_radius: 3
+      gossip_interval: 120
+      aoi_threshold: 1200   # more tolerance during failures
+    tasks:
+      arrival_rate: 0.4
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 600
+      step_interval: 50
+
+  # Communication delay test
+  network_latency:
+    name: "Network Latency"
+    description: "Test with simulated network delays"
+    warehouse:
+      size: [18, 12]
+      storage_regions:
+        - {center: [4, 3], radius: 3}
+        - {center: [14, 9], radius: 3}
+      sortation_regions:
+        - {center: [9, 1], radius: 1}
+        - {center: [9, 11], radius: 1}
+    agents:
+      count: 6
+      initial_positions: "random"
+    dsm:
+      partition_strategy: "spatial"
+      memory_owners: 3
+      halo_radius: 2
+      gossip_interval: 200   # slower gossip
+      aoi_threshold: 2000    # accommodate delays
+      network_delay:
+        min: 10    # ms
+        max: 100   # ms
+        jitter: 20 # ms variance
+    tasks:
+      arrival_rate: 0.3
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 450
+      step_interval: 50
+
+# Default metrics to collect across all experiments
+metrics:
+  performance:
+    - "tasks_completed"
+    - "tasks_failed" 
+    - "average_completion_time"
+    - "agent_utilization"
+    - "total_distance_traveled"
+  dsm:
+    - "memory_reads"
+    - "memory_writes"
+    - "gossip_messages"
+    - "aoi_violations"
+    - "partition_quality"
+    - "coordination_overhead"
+  system:
+    - "cpu_usage"
+    - "memory_usage"
+    - "network_traffic"
+
+# Output configuration
+output:
+  directory: "results/"
+  formats: ["csv", "json", "plots"]
+  plots:
+    - "task_completion_timeline"
+    - "agent_trajectories" 
+    - "dsm_performance_metrics"
+    - "system_resource_usage"

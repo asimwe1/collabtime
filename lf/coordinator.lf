@@ -1,0 +1,103 @@
+/**
+ * Lingua Franca Coordinator for Warehouse Simulation
+ * Emits periodic tick events to connected simulation clients via TCP socket.
+ * Provides deterministic, logical-time-driven stepping.
+ */
+target Python {
+    coordination: centralized
+}
+
+preamble {=
+    import socket
+    import threading
+=}
+
+reactor TickGenerator(
+    port = 9001,
+    tick_period = 50 msec
+) {
+    state server_socket
+    state client_sockets = []
+    state server_thread
+    
+    timer tick_timer(0, tick_period)
+    
+    reaction(startup) {=
+        # Create TCP server socket
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind(("0.0.0.0", self.port))
+        self.server_socket.listen(5)
+        self.server_socket.settimeout(0.5)
+        
+        print(f"[LF Coordinator] Listening on port {self.port}")
+        
+        def accept_clients():
+            while True:
+                try:
+                    client_sock, addr = self.server_socket.accept()
+                    print(f"[LF Coordinator] Client connected from {addr}")
+                    try:
+                        data = client_sock.recv(1024)
+                        if data:
+                            decoded = data.decode("utf-8", errors="ignore").strip()
+                            print(f"[LF Coordinator] Handshake: {decoded}")
+                    except Exception:
+                        pass
+                    self.client_sockets.append(client_sock)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    print(f"[LF Coordinator] Accept error: {e}")
+                    break
+        
+        self.server_thread = threading.Thread(target=accept_clients, daemon=True)
+        self.server_thread.start()
+    =}
+    
+    reaction(tick_timer) {=
+        logical_time_ms = int(lf.time.logical_elapsed() / 1_000_000)
+        message = f"TICK {logical_time_ms}\n".encode("utf-8")
+        
+        dead_clients = []
+        for i, client in enumerate(self.client_sockets):
+            try:
+                client.sendall(message)
+            except Exception as e:
+                print(f"[LF Coordinator] Client {i} disconnected: {e}")
+                dead_clients.append(client)
+        
+        for dead in dead_clients:
+            self.client_sockets.remove(dead)
+            try:
+                dead.close()
+            except Exception:
+                pass
+        
+        if logical_time_ms % 5000 == 0 and logical_time_ms > 0:
+            print(f"[LF Coordinator] Tick at {logical_time_ms} ms, {len(self.client_sockets)} client(s)")
+    =}
+    
+    reaction(shutdown) {=
+        print("[LF Coordinator] Shutting down...")
+        for client in self.client_sockets:
+            try:
+                client.close()
+            except Exception:
+                pass
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except Exception:
+                pass
+        print("[LF Coordinator] Closed all connections")
+    =}
+}
+
+main reactor {
+    tick_gen = new TickGenerator(
+        port=9001,
+        tick_period = 50 msec
+    )
+}
+
