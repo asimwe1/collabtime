@@ -155,6 +155,7 @@ class ExperimentRunner:
             # Run simulation
             duration = config['simulation']['duration']
             step_interval = config['simulation']['step_interval']
+            step_dt = max(step_interval / 1000.0, 0.0)
             steps = int(duration * 1000 / step_interval)  # Convert to steps
             
             self.logger.info(f"Running {steps} steps over {duration}s")
@@ -176,6 +177,9 @@ class ExperimentRunner:
                 for _ in tick_iter:
                     if current_step >= steps:
                         break
+                    # Ensure model knows the step duration for correct arrival rate conversion
+                    if hasattr(model, 'step_duration_s'):
+                        model.step_duration_s = 0.05  # LF tick is 50ms
                     model.step()
                     if current_step % 10 == 0:
                         step_metrics = self.collect_step_metrics(model, current_step)
@@ -192,6 +196,8 @@ class ExperimentRunner:
                     current_step += 1
             else:
                 for step in range(steps):
+                    if hasattr(model, 'step_duration_s'):
+                        model.step_duration_s = step_dt
                     model.step()
                     
                     if step % 10 == 0:

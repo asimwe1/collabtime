@@ -12,14 +12,17 @@ def create_layout():
         
         # Controls
         html.Div([
-            html.Button('Start', id='start-btn', n_clicks=0, 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '16px'}),
-            html.Button('Stop', id='stop-btn', n_clicks=0, 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '16px'}),
-            html.Button('Step', id='step-btn', n_clicks=0, 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '16px'}),
-            html.Button('Reset', id='reset-btn', n_clicks=0, 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '16px'}),
+            html.Button('▶', id='start-btn', n_clicks=0, title='Start', 
+                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
+            html.Button('■', id='stop-btn', n_clicks=0, title='Stop', 
+                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
+            html.Button('⏭', id='step-btn', n_clicks=0, title='Step', 
+                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
+            html.Button('↻', id='reset-btn', n_clicks=0, title='Reset', 
+                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
+            html.Span("Status: ", style={'marginLeft': '20px', 'fontWeight': 'bold'}),
+            html.Span(id='run-status', children='Stopped', 
+                      style={'padding': '6px 10px', 'borderRadius': '6px', 'backgroundColor': '#eee'}),
         ], style={'textAlign': 'center', 'padding': '20px'}),
         
         # Parameters
@@ -34,9 +37,9 @@ def create_layout():
                 ], style={'width': '45%', 'display': 'inline-block', 'padding': '10px'}),
                 
                 html.Div([
-                    html.Label('Task Arrival Rate:', style={'fontWeight': 'bold'}),
-                    dcc.Slider(id='task-rate-slider', min=0.0, max=1.0, step=0.05, value=0.1,
-                              marks={i/10: f'{i/10:.1f}' for i in range(0, 11, 2)},
+                    html.Label('Task Arrival Rate (tasks/sec):', style={'fontWeight': 'bold'}),
+                    dcc.Slider(id='task-rate-slider', min=0.0, max=5.0, step=0.05, value=0.5,
+                              marks={i: f'{i}' for i in range(0, 6)},
                               tooltip={"placement": "bottom", "always_visible": True}),
                 ], style={'width': '45%', 'display': 'inline-block', 'padding': '10px'}),
             ]),
@@ -63,12 +66,19 @@ def create_layout():
             html.Div([
                 html.H3("Live Metrics"),
                 html.Div(id='metrics', style={'fontSize': '16px'}),
-            ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
-            
+                html.Hr(),
+                html.H4("Tasks Timeline"),
+                dcc.Graph(id='tasks-timeseries', style={'height': '240px'}),
+                html.H4("Throughput (tasks/s)"),
+                dcc.Graph(id='throughput-timeseries', style={'height': '200px'}),
+                html.H4("Latency (s)"),
+                dcc.Graph(id='latency-timeseries', style={'height': '200px'}),
+            ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
+
             html.Div([
-                dcc.Graph(id='warehouse-graph', style={'height': '600px'}),
-            ], style={'width': '68%', 'display': 'inline-block', 'padding': '10px'}),
-        ]),
+                dcc.Graph(id='warehouse-graph', style={'height': '700px'}),
+            ], style={'width': '50%', 'display': 'inline-block', 'padding': '10px', 'verticalAlign': 'top'}),
+        ], style={'display': 'flex', 'justifyContent': 'space-between'}),
         
         # Agent Details Table
         html.Div([
@@ -78,5 +88,6 @@ def create_layout():
         
         dcc.Interval(id='interval-component', interval=500, n_intervals=0),  # Update every 500ms
         dcc.Store(id='params-store', data={'n_agents': 8, 'width': 20, 'height': 15, 'task_rate': 0.1}),
+        dcc.Store(id='ts-store', data={'t': [], 'tasks_created': [], 'tasks_completed': [], 'active_tasks': [], 'throughput': [], 'latency': []}),
     ])
 

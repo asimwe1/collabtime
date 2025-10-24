@@ -35,15 +35,19 @@ model = GlobalState(None)
 model_lock = threading.Lock()
 running = GlobalState(False)
 use_lf = GlobalState(False)
+auto_stop_deadline = GlobalState(None)  # wall-clock deadline (epoch seconds)
 
 
 def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1):
     """Create a new model instance."""
+    # Determine step duration based on LF vs internal timing
+    step_dt = 0.05 if use_lf.get() else 0.5
     return WarehouseDSMModel(
         n_agents=n_agents,
         warehouse_width=width,
         warehouse_height=height,
-        task_arrival_rate=task_rate,
+        task_arrival_rate=task_rate,  # interpret as tasks/sec
+        step_duration_s=step_dt,
     )
 
 
@@ -66,6 +70,9 @@ def simulation_loop():
                 logger.info("Successfully connected to LF tick server!")
                 print("Connected to LF tick server!")
                 for _ in client.ticks():
+                    # Auto-stop if deadline reached
+                    if running.get() and auto_stop_deadline.get() and time.time() >= auto_stop_deadline.get():
+                        running.set(False)
                     if running.get() and model.get():
                         with model_lock:
                             model.get().step()
@@ -85,6 +92,9 @@ def simulation_loop():
         # Internal timing
         step_count = 0
         while True:
+            # Auto-stop if deadline reached
+            if running.get() and auto_stop_deadline.get() and time.time() >= auto_stop_deadline.get():
+                running.set(False)
             if running.get() and model.get():
                 with model_lock:
                     m = model.get()

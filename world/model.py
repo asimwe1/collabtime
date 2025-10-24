@@ -25,6 +25,7 @@ except Exception:
 import random
 import time
 from typing import Dict, List, Any
+import math
 
 from .graph import WarehouseGraph, create_standard_warehouse
 from .agent import RobotAgent
@@ -49,7 +50,8 @@ class WarehouseDSMModel(Model):
                  task_priorities: List[int] = None,
                  warehouse_width: int = 20,
                  warehouse_height: int = 10,
-                 seed: int = None):
+                 seed: int = None,
+                 step_duration_s: float = 0.5):
         
         super().__init__(seed=seed)
         
@@ -63,7 +65,14 @@ class WarehouseDSMModel(Model):
         
         # Simulation parameters
         self.num_agents = n_agents if n_agents is not None else 16
-        self.task_arrival_rate = task_arrival_rate
+        # Interpret task_arrival_rate as tasks per second
+        self.task_arrival_rate = task_arrival_rate  # tasks/sec
+        self.step_duration_s = step_duration_s
+        # Event-driven Poisson arrivals: track time to next arrival (seconds)
+        if self.task_arrival_rate > 0:
+            self._time_to_next_arrival_s = random.expovariate(self.task_arrival_rate)
+        else:
+            self._time_to_next_arrival_s = float('inf')
         self.step_count = 0
         self.start_time = time.time()
         
@@ -108,6 +117,8 @@ class WarehouseDSMModel(Model):
         # For runner compatibility
         self.completed_tasks = []
         self.failed_tasks = []
+        # Latency samples for completed tasks (seconds)
+        self.completed_latencies = []
         self.datacollector.collect(self)
     
     def _create_agents(self, agent_positions: List[tuple] = None):
@@ -173,9 +184,21 @@ class WarehouseDSMModel(Model):
             self.running = False
     
     def _generate_tasks(self):
-        """Generate new tasks based on arrival rate"""
-        if self.random.random() < self.task_arrival_rate:
+        """Generate new tasks using event-driven Poisson arrivals (exact in continuous time)."""
+        lam = max(self.task_arrival_rate, 0.0)
+        dt = max(self.step_duration_s, 0.0)
+        if lam <= 0 or dt <= 0:
+            return
+        # Decrease time to next arrival by this step's duration
+        self._time_to_next_arrival_s -= dt
+        # Spawn tasks for each elapsed arrival; guard with a reasonable cap per step
+        spawns_this_step = 0
+        max_spawns = 1000
+        while self._time_to_next_arrival_s <= 0 and spawns_this_step < max_spawns:
             self._create_random_task()
+            spawns_this_step += 1
+            # Account for overshoot by adding the next exponential gap
+            self._time_to_next_arrival_s += random.expovariate(lam)
     
     def _create_random_task(self):
         """Create a random task at a random location (on any aisle)"""
@@ -218,6 +241,10 @@ class WarehouseDSMModel(Model):
                     # Track completion
                     if task.get('status') == 'completed':
                         self.completed_tasks.append(task_id)
+                        # Record latency if we have creation time
+                        created_time = task_info.get('created_time')
+                        if created_time:
+                            self.completed_latencies.append(time.time() - created_time)
                     else:
                         self.failed_tasks.append(task_id)
         
