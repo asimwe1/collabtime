@@ -18,6 +18,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dsm.api import dsm
+from pathfinder import astar_with_congestion
 
 
 class AgentState(Enum):
@@ -83,37 +84,7 @@ class RobotAgent(mesa.Agent):
                 unclaimed_tasks.append((task_id, task_info))
         
         if not unclaimed_tasks:
-            # No tasks - move to random staging area (perimeter) to stay out of the way
-            if not hasattr(self, '_target_staging_node'):
-                # Pick a random staging node as target
-                staging_nodes = [n for n in range(self.model.warehouse.width * self.model.warehouse.height)
-                               if self.model.warehouse.node_types.get(n) == 'staging']
-                if staging_nodes:
-                    self._target_staging_node = self.model.random.choice(staging_nodes)
-                else:
-                    return
-            
-            staging_node = self._target_staging_node
-            
-            if self.node != staging_node:
-                if not hasattr(self, '_moving_to_staging'):
-                    self._moving_to_staging = True
-                    self.path = self._plan_path(self.node, staging_node)
-                
-                # Move along path with timer
-                if self.movement_timer > 0:
-                    self.movement_timer -= 1
-                elif self.path and len(self.path) > 1:
-                    next_node = self.path[1]
-                    if self._can_move_to(next_node):
-                        distance = self._calculate_distance(self.node, next_node)
-                        self.metrics['total_distance'] += distance
-                        self.total_distance += distance
-                        self.node = next_node
-                        self.path.pop(0)
-                        self.movement_timer = 5
-                else:
-                    self._moving_to_staging = False
+            self._idle_wander_to_staging()
             return
         
         # Reset staging flags when tasks are available
@@ -122,9 +93,12 @@ class RobotAgent(mesa.Agent):
         if hasattr(self, '_target_staging_node'):
             delattr(self, '_target_staging_node')
         
-        # Find tasks within search radius, pick one with some randomness
+        # Find tasks: prioritize nearby, but consider all if none nearby
         nearby_tasks = []
+        distant_tasks = []
         
+        # Shuffle for fairness, then evaluate
+        self.model.random.shuffle(unclaimed_tasks)
         for task_id, task_info in unclaimed_tasks:
             task_location = task_info.get('location')
             if task_location is None:
@@ -135,48 +109,67 @@ class RobotAgent(mesa.Agent):
             
             if distance <= self.search_radius:
                 nearby_tasks.append((task_id, task_location, distance))
-        
-        # Pick task: 70% closest, 30% random nearby (reduces clustering)
-        best_task = None
-        if nearby_tasks:
-            if self.model.random.random() < 0.7:
-                # Pick closest
-                nearby_tasks.sort(key=lambda x: x[2])
-                best_task = (nearby_tasks[0][0], nearby_tasks[0][1])
             else:
-                # Pick random
-                chosen = self.model.random.choice(nearby_tasks)
-                best_task = (chosen[0], chosen[1])
+                distant_tasks.append((task_id, task_location, distance))
+        
+        # Pick task: prioritize nearby, but accept distant if no nearby options
+        best_task = None
+        candidates = nearby_tasks if nearby_tasks else distant_tasks
+        
+        if candidates:
+            # Sort by distance with random tiebreaker for equal distances
+            candidates.sort(key=lambda x: (x[2], self.model.random.random()))
+            best_task = (candidates[0][0], candidates[0][1])
         
         if best_task:
-            task_id, task_location = best_task
-            # Try to claim the task
-            if dsm_api.claim(task_id, self.unique_id):
-                self.current_task_id = task_id
-                self.task_location = task_location
-                self.metrics['tasks_claimed'] += 1
-                
-                # Plan path to task
-                self.path = self._plan_path(self.node, task_location)
-                
-                if self.path:
-                    self.state = AgentState.NAVIGATING
+            # Try multiple candidates this tick to avoid idle stalls when claims race
+            attempts = 0
+            attempted_ids = set()
+            while attempts < 3 and best_task:
+                task_id, task_location = best_task
+                attempted_ids.add(task_id)
+                # Try to claim the task
+                if dsm_api.claim(task_id, self.unique_id):
+                    self.current_task_id = task_id
+                    self.task_location = task_location
+                    self.metrics['tasks_claimed'] += 1
+                    # Plan path to task
+                    self.path = self._plan_path(self.node, task_location)
+                    if self.path:
+                        self.state = AgentState.NAVIGATING
+                    else:
+                        # Can't reach task, release it
+                        self._fail_current_task()
+                    return
+                attempts += 1
+                # try the next best remaining candidate with some randomization
+                remaining = [c for c in candidates if c[0] not in attempted_ids]
+                if remaining:
+                    remaining.sort(key=lambda x: (x[2], self.model.random.random()))
+                    best_task = (remaining[0][0], remaining[0][1])
                 else:
-                    # Can't reach task, release it
-                    self._fail_current_task()
+                    best_task = None
+            # If nothing could be claimed, wander
+            self._idle_wander_to_staging()
+        else:
+            # No visible tasks after evaluation — gentle wander
+            self._idle_wander_to_staging()
     
     def _handle_navigating(self):
         """Move along path towards task location"""
-        # Check if arrived at destination
+        # Check if arrived at destination (MUST check before path validation)
         if self.node == self.task_location:
             self.state = AgentState.WORKING
             self.work_timer = self.work_duration
             return
         
-        # Check if path is exhausted
+        # Check if path is exhausted (but we haven't arrived yet)
         if not self.path or len(self.path) < 2:
-            # No valid next node in path
-            self._fail_current_task()
+            # No valid next node in path and we're not at goal - try to replan once
+            self.path = self._plan_path(self.node, self.task_location)
+            if not self.path or len(self.path) < 2:
+                # Still no path after replan - fail this task
+                self._fail_current_task()
             return
         
         # If currently moving, decrement timer
@@ -187,23 +180,30 @@ class RobotAgent(mesa.Agent):
         # Ready to move to next node
         next_node = self.path[1]  # path[0] is current node
         
-        if self._can_move_to(next_node):
+        if self._can_move_to(next_node) and self._reserve_edge(self.node, next_node):
             # Start moving to next node (takes 5 steps per cell for realistic speed)
             distance = self._calculate_distance(self.node, next_node)
             self.metrics['total_distance'] += distance
             self.total_distance += distance
+            
+            # Write flow trace to DSM for congestion awareness
+            self._write_flow_trace(self.node, next_node)
+            
             self.node = next_node
             self.path.pop(0)
             self.movement_timer = 5  # Takes 5 simulation steps to move one cell
             self.stuck_counter = 0  # Reset stuck counter
         else:
-            # Path blocked - WAIT, but give up quickly if truly stuck
+            # Path blocked - attempt lateral escape before waiting
             self.stuck_counter += 1
-            if self.stuck_counter > 15:
+            if self._try_lateral_escape():
+                return
+            # Replan with exponential backoff
+            if self.stuck_counter in (2, 4, 8, 16):
+                self.path = self._plan_path(self.node, self.task_location)
+            if self.stuck_counter > 24:
                 # Give up on this task to break deadlock
-                # Agent will return to staging and try a different task
                 self._fail_current_task()
-                self.stuck_counter = 0
     
     def _handle_working(self):
         """Execute work at task location"""
@@ -212,7 +212,8 @@ class RobotAgent(mesa.Agent):
         if self.work_timer <= 0:
             # Task complete
             dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            dsm_api.complete_task(self.current_task_id)
+            if self.current_task_id is not None:
+                dsm_api.complete_task(self.current_task_id)
             
             # Update metrics
             self.metrics['tasks_completed'] += 1
@@ -246,9 +247,16 @@ class RobotAgent(mesa.Agent):
             return float('inf')
     
     def _plan_path(self, from_node: int, to_node: int) -> List[int]:
-        """Plan shortest path between two nodes"""
+        """Plan shortest path between two nodes using DSM congestion awareness"""
         try:
-            path = self.model.warehouse.get_shortest_path(from_node, to_node)
+            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
+            path = astar_with_congestion(
+                warehouse=self.model.warehouse,
+                dsm_api=dsm_api,
+                start=from_node,
+                goal=to_node,
+                cost_params={'alpha': 2.0, 'beta': 0.5, 'max_aoi_ms': 5000}
+            )
             return path if path else []
         except:
             return []
@@ -261,7 +269,94 @@ class RobotAgent(mesa.Agent):
             self.task_location = None
             self.path = []
         
+        self.stuck_counter = 0
         self.state = AgentState.IDLE
+    
+    def _reserve_edge(self, from_node: int, to_node: int) -> bool:
+        """Request edge reservation from the model for conflict-free move."""
+        try:
+            return self.model.try_reserve_edge(from_node, to_node, duration_steps=5)
+        except Exception:
+            return True
+    
+    def _write_flow_trace(self, from_node: int, to_node: int):
+        """Write flow trace to DSM to signal agent movement for congestion tracking."""
+        try:
+            import time
+            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
+            current_time_ms = int(time.time() * 1000)
+            # Write increment to flow_trace at destination node
+            dsm_api.write_delta('flow_trace', {to_node: 1.0}, current_time_ms)
+        except Exception:
+            pass
+    
+    def _try_lateral_escape(self) -> bool:
+        """Try a one-step lateral move to de-queue if blocked.
+        Chooses an adjacent aisle neighbor that reduces or maintains heuristic distance.
+        Returns True if moved, False otherwise.
+        """
+        try:
+            if self.movement_timer > 0:
+                return False
+            neighbors = self.model.warehouse.get_neighbors(self.node)
+            # Heuristic distance to target
+            if self.task_location is None:
+                return False
+            hx, hy = self.model.warehouse.node_to_pos(self.task_location)
+            nx, ny = self.model.warehouse.node_to_pos(self.node)
+            base_h = abs(hx - nx) + abs(hy - ny)
+            # Prefer moves that keep or slightly improve heuristic
+            candidates = []
+            for nb in neighbors:
+                if self._can_move_to(nb):
+                    x, y = self.model.warehouse.node_to_pos(nb)
+                    h = abs(hx - x) + abs(hy - y)
+                    if h <= base_h + 1:
+                        candidates.append((h, nb))
+            if not candidates:
+                return False
+            candidates.sort(key=lambda t: (t[0], self.model.random.random()))
+            next_nb = candidates[0][1]
+            # Reserve and move
+            if self._reserve_edge(self.node, next_nb):
+                distance = self._calculate_distance(self.node, next_nb)
+                self.metrics['total_distance'] += distance
+                self.total_distance += distance
+                self._write_flow_trace(self.node, next_nb)
+                self.node = next_nb
+                self.movement_timer = 2
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def _idle_wander_to_staging(self):
+        """Non-blocking idle behavior: drift to a random perimeter staging node."""
+        if not hasattr(self, '_target_staging_node'):
+            staging_nodes = [n for n in range(self.model.warehouse.width * self.model.warehouse.height)
+                           if self.model.warehouse.node_types.get(n) == 'staging']
+            if staging_nodes:
+                self._target_staging_node = self.model.random.choice(staging_nodes)
+            else:
+                return
+        staging_node = self._target_staging_node
+        if self.node != staging_node:
+            if not hasattr(self, '_moving_to_staging'):
+                self._moving_to_staging = True
+                self.path = self._plan_path(self.node, staging_node)
+            if self.movement_timer > 0:
+                self.movement_timer -= 1
+            elif self.path and len(self.path) > 1:
+                next_node = self.path[1]
+                if self._can_move_to(next_node):
+                    distance = self._calculate_distance(self.node, next_node)
+                    self.metrics['total_distance'] += distance
+                    self.total_distance += distance
+                    self.node = next_node
+                    self.path.pop(0)
+                    self.movement_timer = 5
+            else:
+                self._moving_to_staging = False
     
     def get_state_info(self) -> Dict[str, Any]:
         """Get current state information for debugging/monitoring"""

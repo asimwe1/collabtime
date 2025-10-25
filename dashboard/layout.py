@@ -8,22 +8,28 @@ from dash import html, dcc
 def create_layout():
     """Create the main Dash layout."""
     return html.Div([
-        html.H1("Warehouse DSM Simulation", style={'textAlign': 'center'}),
+        html.H1("Collaborative Memory Simulation", style={'textAlign': 'center'}),
         
         # Controls
         html.Div([
-            html.Button('▶', id='start-btn', n_clicks=0, title='Start', 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
-            html.Button('■', id='stop-btn', n_clicks=0, title='Stop', 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
-            html.Button('⏭', id='step-btn', n_clicks=0, title='Step', 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
-            html.Button('↻', id='reset-btn', n_clicks=0, title='Reset', 
-                       style={'margin': '10px', 'padding': '10px 20px', 'fontSize': '18px', 'cursor': 'pointer'}),
+            html.Button('▶', id='start-btn', n_clicks=0, title='Start', className='control-btn'),
+            html.Button('■', id='stop-btn', n_clicks=0, title='Stop', className='control-btn'),
+            html.Button('⏭', id='step-btn', n_clicks=0, title='Step', className='control-btn'),
+            html.Button('↻', id='reset-btn', n_clicks=0, title='Reset', className='control-btn'),
             html.Span("Status: ", style={'marginLeft': '20px', 'fontWeight': 'bold'}),
-            html.Span(id='run-status', children='Stopped', 
+            html.Span(id='run-status', children='Stopped',
                       style={'padding': '6px 10px', 'borderRadius': '6px', 'backgroundColor': '#eee'}),
-        ], style={'textAlign': 'center', 'padding': '20px'}),
+            html.Span("Memory: ", style={'marginLeft': '20px', 'fontWeight': 'bold'}),
+            dcc.RadioItems(
+                id='mode-radio',
+                options=[
+                    {'label': 'Centralized', 'value': 'centralized'},
+                    {'label': 'Distributed', 'value': 'distributed'}
+                ],
+                value='centralized',
+                labelStyle={'display': 'inline-block', 'marginRight': '12px'}
+            ),
+        ], style={'display': 'flex', 'justifyContent': 'center', 'alignItems': 'center', 'gap': '12px', 'padding': '20px'}),
         
         # Parameters
         html.Div([
@@ -69,7 +75,7 @@ def create_layout():
                 html.Hr(),
                 html.H4("Tasks Timeline"),
                 dcc.Graph(id='tasks-timeseries', style={'height': '240px'}),
-                html.H4("Throughput (tasks/s)"),
+                html.H4("Throughput (tasks/min)"),
                 dcc.Graph(id='throughput-timeseries', style={'height': '200px'}),
                 html.H4("Latency (s)"),
                 dcc.Graph(id='latency-timeseries', style={'height': '200px'}),

@@ -95,10 +95,19 @@ def create_warehouse_figure(model):
             dsm_api = None
     available_x, available_y = [], []
     claimed_x, claimed_y = [], []
+    # For distributed DSM, bucket tasks per shard for color-coding
+    per_shard_available = []
+    per_shard_claimed = []
+    shard_colors = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#d946ef', '#059669']
     
     if dsm_api and hasattr(dsm_api, 'task_registry'):
         # Debug: check ALL task statuses
         status_counts = {}
+        # Detect shards if router is used
+        num_shards = len(getattr(dsm_api, 'shards', [])) if hasattr(dsm_api, 'shards') else 0
+        if num_shards and num_shards > 0:
+            per_shard_available = [([], []) for _ in range(num_shards)]  # tuples of (x_list, y_list)
+            per_shard_claimed = [([], []) for _ in range(num_shards)]
         for task_id, task_info in dsm_api.task_registry.tasks.items():
             if isinstance(task_info, dict):
                 status = task_info.get('status', 'unknown')
@@ -107,19 +116,43 @@ def create_warehouse_figure(model):
                 
                 if location is not None and status in ['available', 'claimed']:
                     x, y = model.warehouse.node_to_pos(location)
-                    if status == 'available':
-                        available_x.append(x)
-                        available_y.append(y)
-                    elif status == 'claimed':
-                        claimed_x.append(x)
-                        claimed_y.append(y)
+                    if num_shards and num_shards > 0:
+                        shard_idx = (int(task_id) >> 32) & 0xFFFFFFFF
+                        shard_idx = shard_idx if 0 <= shard_idx < num_shards else 0
+                        if status == 'available':
+                            per_shard_available[shard_idx][0].append(x)
+                            per_shard_available[shard_idx][1].append(y)
+                        else:
+                            per_shard_claimed[shard_idx][0].append(x)
+                            per_shard_claimed[shard_idx][1].append(y)
+                    else:
+                        if status == 'available':
+                            available_x.append(x)
+                            available_y.append(y)
+                        elif status == 'claimed':
+                            claimed_x.append(x)
+                            claimed_y.append(y)
         
-        # Debug: print task info every 100 steps using print (goes to console)
-        if model.step_count % 100 == 0 and model.step_count > 0:
+        # Debug: print task info every 20 steps for more frequent updates
+        if model.step_count % 20 == 0 and model.step_count > 0:
             total_tasks = len(dsm_api.task_registry.tasks)
             model_active = len(model.active_tasks)
             model_created = model.task_counter
-            print(f"[TASKS] Step {model.step_count}: Created={model_created}, Active={model_active}, DSM={total_tasks}, Avail={len(available_x)}, Claimed={len(claimed_x)}")
+            
+            # Count visible tasks correctly based on mode
+            if num_shards and num_shards > 0:
+                # Distributed mode: count from per_shard lists
+                avail_count = sum(len(ps[0]) for ps in per_shard_available)
+                claimed_count = sum(len(ps[0]) for ps in per_shard_claimed)
+            else:
+                # Centralized mode: count from main lists
+                avail_count = len(available_x)
+                claimed_count = len(claimed_x)
+            
+            print(f"[TASKS] Step {model.step_count}: Created={model_created}, Active={model_active}, DSM={total_tasks}, Avail={avail_count}, Claimed={claimed_count}")
+            # Debug status distribution
+            if status_counts:
+                print(f"[STATUS] {status_counts}")
         
     # Draw agents first, then tasks on top for visibility
     
@@ -150,7 +183,7 @@ def create_warehouse_figure(model):
         x=idle_x if idle_x else [None], 
         y=idle_y if idle_y else [None],
         mode='markers+text',
-        marker=dict(size=18, color='gray', line=dict(color='black', width=2)),
+        marker=dict(size=20, color='gray', line=dict(color='black', width=2)),
         name='Idle',
         text=idle_text,
         textfont=dict(color='white', size=10),
@@ -161,7 +194,7 @@ def create_warehouse_figure(model):
         x=nav_x if nav_x else [None], 
         y=nav_y if nav_y else [None],
         mode='markers+text',
-        marker=dict(size=18, color='royalblue', line=dict(color='black', width=2)),
+        marker=dict(size=20, color='royalblue', line=dict(color='black', width=2)),
         name='Navigating',
         text=nav_text,
         textfont=dict(color='white', size=10),
@@ -172,7 +205,7 @@ def create_warehouse_figure(model):
         x=work_x if work_x else [None], 
         y=work_y if work_y else [None],
         mode='markers+text',
-        marker=dict(size=18, color='limegreen', line=dict(color='black', width=2)),
+        marker=dict(size=20, color='limegreen', line=dict(color='black', width=2)),
         name='Working',
         text=work_text,
         textfont=dict(color='white', size=10),
@@ -180,25 +213,53 @@ def create_warehouse_figure(model):
     ))
 
     # Finally draw tasks on TOP so they are visible
-    fig.add_trace(go.Scatter(
-        x=available_x if available_x else [None], 
-        y=available_y if available_y else [None],
-        mode='markers',
-        marker=dict(size=18, color='#FFD700', symbol='star',  # gold
-                   line=dict(color='black', width=2)),
-        name='Available Tasks',
-        showlegend=True
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=claimed_x if claimed_x else [None], 
-        y=claimed_y if claimed_y else [None],
-        mode='markers',
-        marker=dict(size=16, color='#E74C3C', symbol='star',  # red
-                   line=dict(color='black', width=2)),
-        name='Claimed Tasks',
-        showlegend=True
-    ))
+    if per_shard_available and len(per_shard_available) > 0:
+        # Distributed coloring per shard
+        for idx in range(len(per_shard_available)):
+            ax, ay = per_shard_available[idx]
+            cx, cy = per_shard_claimed[idx]
+            color = shard_colors[idx % len(shard_colors)]
+            # Available
+            fig.add_trace(go.Scatter(
+                x=ax if ax else [None],
+                y=ay if ay else [None],
+                mode='markers',
+                marker=dict(size=10, color=color, symbol='star', line=dict(color='black', width=1)),
+                name=f'Shard {idx} - available',
+                legendgroup=f'shard{idx}',
+                showlegend=True
+            ))
+            # Claimed (diamond, same size but distinct shape)
+            fig.add_trace(go.Scatter(
+                x=cx if cx else [None],
+                y=cy if cy else [None],
+                mode='markers',
+                marker=dict(size=10, color=color, symbol='diamond', line=dict(color='black', width=1)),
+                name=f'Shard {idx} - claimed',
+                legendgroup=f'shard{idx}',
+                showlegend=True
+            ))
+    else:
+        # Centralized coloring
+        fig.add_trace(go.Scatter(
+            x=available_x if available_x else [None], 
+            y=available_y if available_y else [None],
+            mode='markers',
+            marker=dict(size=10, color='#FFD700', symbol='star',  # gold star
+                       line=dict(color='black', width=1)),
+            name='Available Tasks',
+            showlegend=True
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=claimed_x if claimed_x else [None], 
+            y=claimed_y if claimed_y else [None],
+            mode='markers',
+            marker=dict(size=10, color='#E74C3C', symbol='diamond',  # red diamond
+                       line=dict(color='black', width=1)),
+            name='Claimed Tasks',
+            showlegend=True
+        ))
     
     # Layout
     fig.update_layout(

@@ -116,21 +116,25 @@ class WarehouseGraph:
     
     def _add_special_nodes(self):
         """Add special-purpose nodes like docks, charging stations"""
-        # Pick some storage nodes as pick locations
-        storage_nodes = list(self.regions['storage'])
-        pick_locations = random.sample(storage_nodes, min(6, len(storage_nodes)))
+        # Pick some TRAVERSABLE storage nodes (aisles/staging only) as pick locations
+        storage_nodes = [n for n in self.regions['storage'] 
+                        if self.node_types.get(n) in ('aisle', 'staging')]
+        if storage_nodes:
+            pick_locations = random.sample(storage_nodes, min(6, len(storage_nodes)))
+            
+            for node in pick_locations:
+                self.node_types[node] = 'pick_location'
+                self.capacities[node] = 1  # Only one agent at pick location
         
-        for node in pick_locations:
-            self.node_types[node] = 'pick_location'
-            self.capacities[node] = 1  # Only one agent at pick location
-        
-        # Pick some sortation nodes as pack stations
-        sortation_nodes = list(self.regions['sortation'])
-        pack_stations = random.sample(sortation_nodes, min(5, len(sortation_nodes)))
-        
-        for node in pack_stations:
-            self.node_types[node] = 'pack_station'
-            self.capacities[node] = 1  # Only one agent at pack station
+        # Pick some TRAVERSABLE sortation nodes (aisles/staging only) as pack stations
+        sortation_nodes = [n for n in self.regions['sortation'] 
+                          if self.node_types.get(n) in ('aisle', 'staging')]
+        if sortation_nodes:
+            pack_stations = random.sample(sortation_nodes, min(5, len(sortation_nodes)))
+            
+            for node in pack_stations:
+                self.node_types[node] = 'pack_station'
+                self.capacities[node] = 1  # Only one agent at pack station
 
     # --- Convenience mutators used by experiment configs ---
     def node_id_from_pos(self, pos: Tuple[int, int]) -> int:

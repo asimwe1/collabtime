@@ -38,16 +38,28 @@ use_lf = GlobalState(False)
 auto_stop_deadline = GlobalState(None)  # wall-clock deadline (epoch seconds)
 
 
-def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1):
-    """Create a new model instance."""
+def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: str = 'centralized', num_shards: int = 4):
+    """Create a new model instance (centralized or distributed)."""
     # Determine step duration based on LF vs internal timing
     step_dt = 0.05 if use_lf.get() else 0.5
+
+    dsm_instance = None
+    if mode == 'distributed':
+        try:
+            from dsm.router import DSMRouter, default_region_mapper
+            def node_to_shard(node_id: int, w: int = width, shards: int = num_shards) -> int:
+                return default_region_mapper(node_id, w, shards)
+            dsm_instance = DSMRouter(num_shards=num_shards, node_to_shard=node_to_shard)
+        except Exception:
+            dsm_instance = None
+
     return WarehouseDSMModel(
         n_agents=n_agents,
         warehouse_width=width,
         warehouse_height=height,
         task_arrival_rate=task_rate,  # interpret as tasks/sec
         step_duration_s=step_dt,
+        dsm=dsm_instance,
     )
 
 

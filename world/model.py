@@ -12,14 +12,17 @@ import importlib
 try:
     RandomActivation = importlib.import_module("mesa.time").RandomActivation
 except Exception:
-    class RandomActivation:  # minimal fallback scheduler
+    class RandomActivation:  # minimal fallback scheduler that actually randomizes
         def __init__(self, model):
             self.model = model
             self.agents = []
         def add(self, agent):
             self.agents.append(agent)
         def step(self):
-            for agent in list(self.agents):
+            # Randomly shuffle agents each step for fair task claiming
+            shuffled_agents = list(self.agents)
+            random.shuffle(shuffled_agents)
+            for agent in shuffled_agents:
                 if hasattr(agent, "step"):
                     agent.step()
 import random
@@ -75,6 +78,8 @@ class WarehouseDSMModel(Model):
             self._time_to_next_arrival_s = float('inf')
         self.step_count = 0
         self.start_time = time.time()
+        # Edge reservations for conflict-free movements (key: unordered edge, value: expire_step)
+        self.edge_reservations = {}
         
         # Create or accept warehouse graph
         self.warehouse = warehouse_graph or create_standard_warehouse(warehouse_width, warehouse_height)
@@ -166,6 +171,10 @@ class WarehouseDSMModel(Model):
     def step(self):
         """Execute one model step"""
         self.step_count += 1
+        # Cleanup expired edge reservations
+        expired_keys = [k for k, exp in self.edge_reservations.items() if exp <= self.step_count]
+        for k in expired_keys:
+            self.edge_reservations.pop(k, None)
         
         # Generate new tasks
         self._generate_tasks()
@@ -182,6 +191,19 @@ class WarehouseDSMModel(Model):
         # Check for termination conditions
         if self.step_count >= 10000:  # Max steps
             self.running = False
+
+    # --- Movement coordination ---
+    def try_reserve_edge(self, from_node: int, to_node: int, duration_steps: int) -> bool:
+        """Reserve an edge for duration_steps to prevent head-on collisions.
+        Returns True if reservation granted, False otherwise.
+        """
+        key = tuple(sorted((from_node, to_node)))
+        expires = self.edge_reservations.get(key)
+        if expires is None or expires <= self.step_count:
+            # Grant reservation (short duration to reduce starvation)
+            self.edge_reservations[key] = self.step_count + max(1, min(2, duration_steps))
+            return True
+        return False
     
     def _generate_tasks(self):
         """Generate new tasks using event-driven Poisson arrivals (exact in continuous time)."""
@@ -202,16 +224,20 @@ class WarehouseDSMModel(Model):
     
     def _create_random_task(self):
         """Create a random task at a random location (on any aisle)"""
-        # Use ALL aisle nodes for maximum task distribution
-        pick_locations = [n for n in range(self.warehouse.width * self.warehouse.height)
-                         if self.warehouse.node_types.get(n) == 'aisle']
-        
-        if pick_locations:
-            location = self.random.choice(pick_locations)
+        # Prefer explicit pick/pack tiles; fall back to aisles if none exist
+        pick_pack_nodes = [n for n in range(self.warehouse.width * self.warehouse.height)
+                           if self.warehouse.node_types.get(n) in ('pick_location', 'pack_station')]
+        candidate_nodes = pick_pack_nodes
+        if not candidate_nodes:
+            candidate_nodes = [n for n in range(self.warehouse.width * self.warehouse.height)
+                               if self.warehouse.node_types.get(n) == 'aisle']
+
+        if candidate_nodes:
+            location = self.random.choice(candidate_nodes)
             
             # Debug: log task locations occasionally
             if self.step_count % 100 == 0:
-                print(f"Step {self.step_count}: {len(pick_locations)} possible task locations, spawned at node {location}")
+                print(f"Step {self.step_count}: {len(candidate_nodes)} possible task locations, spawned at node {location}")
             
             # Create task in DSM
             dsm_api = self.dsm if self.dsm is not None else dsm

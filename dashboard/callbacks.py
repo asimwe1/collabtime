@@ -19,20 +19,25 @@ from .state import model, model_lock, running, create_initial_model, use_lf, aut
     Output('ts-store', 'data'),
     Output('run-status', 'children'),
     Output('run-status', 'style'),
+    Output('start-btn', 'style'),
+    Output('stop-btn', 'style'),
+    Output('start-btn', 'className'),
+    Output('stop-btn', 'className'),
     Input('interval-component', 'n_intervals'),
     Input('start-btn', 'n_clicks'),
     Input('stop-btn', 'n_clicks'),
     Input('step-btn', 'n_clicks'),
     Input('reset-btn', 'n_clicks'),
     State('ts-store', 'data'),
+    State('mode-radio', 'value'),
     prevent_initial_call=False
 )
-def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, reset_clicks, ts_store):
+def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, reset_clicks, ts_store, mode_value):
     """Update all visualization components."""
     with model_lock:
         m = model.get()
         if m is None:
-            m = create_initial_model()
+            m = create_initial_model(mode=mode_value)
             model.set(m)
         
         fig = create_warehouse_figure(m)
@@ -44,9 +49,34 @@ def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, re
         
         # Step duration depends on LF vs internal timing
         step_dt = 0.05 if use_lf.get() else 0.5
+        
+        # Calculate instantaneous throughput from time-series data (recent rate)
         throughput = 0.0
-        if m.step_count > 0 and step_dt > 0:
-            throughput = len(m.completed_tasks) / (m.step_count * step_dt)
+        if len(ts_store.get('t', [])) >= 2 and len(ts_store.get('tasks_completed', [])) >= 2:
+            # Look at completions over last 30 seconds (or available data)
+            window_duration = 30.0  # seconds
+            current_t = m.step_count * step_dt
+            
+            # Find index where time is >= current_t - window_duration
+            cutoff_t = current_t - window_duration
+            start_idx = 0
+            for i in range(len(ts_store['t']) - 1, -1, -1):
+                if ts_store['t'][i] <= cutoff_t:
+                    start_idx = i
+                    break
+            
+            if start_idx < len(ts_store['tasks_completed']) - 1:
+                completed_at_start = ts_store['tasks_completed'][start_idx]
+                completed_now = len(m.completed_tasks)
+                actual_window = current_t - ts_store['t'][start_idx]
+                
+                if actual_window > 0:
+                    # Throughput = (tasks completed in window) / (window duration) * 60
+                    throughput = 60.0 * (completed_now - completed_at_start) / actual_window
+        
+        # Fallback if not enough history
+        if throughput == 0.0 and m.step_count > 0 and step_dt > 0:
+            throughput = 60.0 * len(m.completed_tasks) / (m.step_count * step_dt)
         
         # Stable Agent States block: always show all states, even if zero
         all_states = ['idle', 'navigating', 'working']
@@ -60,7 +90,7 @@ def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, re
             html.P(f"Tasks Completed: {len(m.completed_tasks)}"),
             html.P(f"Active Tasks: {len(m.active_tasks)}"),
             html.P(f"Failed Tasks: {len(m.failed_tasks)}"),
-            html.P(f"Throughput: {throughput:.2f} tasks/s"),
+            html.P(f"Throughput: {throughput:.2f} tasks/min"),
             html.Hr(),
             html.P("Agent States:", style={'fontWeight': 'bold'}),
             *state_lines,
@@ -163,7 +193,7 @@ def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, re
 
         throughput_fig = {
             'data': [
-                {'x': ts_store['t'], 'y': ts_store['throughput'], 'type': 'line', 'name': 'Throughput (tasks/s)'}
+                {'x': ts_store['t'], 'y': ts_store['throughput'], 'type': 'line', 'name': 'Throughput (tasks/min)'}
             ],
             'layout': {'margin': {'l': 40, 'r': 20, 't': 10, 'b': 40}, 'legend': {'orientation': 'h'}}
         }
@@ -182,7 +212,26 @@ def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, re
                         'backgroundColor': '#d1fae5' if is_running else '#fee2e2',
                         'color': '#065f46' if is_running else '#991b1b'}
 
-        return fig, metrics, agent_table, tasks_fig, throughput_fig, latency_fig, ts_store, status_text, status_style
+        # Inline styles (backward compatible) and CSS class toggles for instant UX
+        base_btn = {
+            'width': '56px', 'height': '56px', 'display': 'inline-flex',
+            'alignItems': 'center', 'justifyContent': 'center', 'fontSize': '22px',
+            'lineHeight': '1', 'padding': '0', 'boxSizing': 'border-box',
+            'fontFamily': 'Segoe UI Symbol, Noto Sans, Roboto, Helvetica, Arial, sans-serif',
+            'cursor': 'pointer', 'border': '1px solid #ddd', 'borderRadius': '8px',
+            'backgroundColor': '#fff', 'boxShadow': '0 1px 2px rgba(0,0,0,0.04)'
+        }
+        start_style = dict(base_btn)
+        stop_style = dict(base_btn)
+        if is_running:
+            start_style.update({'backgroundColor': '#dcfce7', 'border': '1px solid #10b981'})
+        else:
+            stop_style.update({'backgroundColor': '#fee2e2', 'border': '1px solid #ef4444'})
+
+        start_class = 'control-btn' + (' is-running' if is_running else '')
+        stop_class = 'control-btn' + ('' if is_running else ' is-stopped')
+
+        return fig, metrics, agent_table, tasks_fig, throughput_fig, latency_fig, ts_store, status_text, status_style, start_style, stop_style, start_class, stop_class
 
 
 @callback(
@@ -242,9 +291,10 @@ def step_simulation(n_clicks):
     State('width-slider', 'value'),
     State('height-slider', 'value'),
     State('task-rate-slider', 'value'),
+    State('mode-radio', 'value'),
     prevent_initial_call=True
 )
-def reset_simulation(n_clicks, n_agents_val, width_val, height_val, task_rate_val):
+def reset_simulation(n_clicks, n_agents_val, width_val, height_val, task_rate_val, mode_value):
     running.set(False)
     auto_stop_deadline.set(None)
     with model_lock:
@@ -258,7 +308,7 @@ def reset_simulation(n_clicks, n_agents_val, width_val, height_val, task_rate_va
         except Exception:
             pass
         
-        m = create_initial_model(n_agents_val, width_val, height_val, task_rate_val)
+        m = create_initial_model(n_agents_val, width_val, height_val, task_rate_val, mode=mode_value)
         model.set(m)
     # Clear plots/store and set status
     empty_ts = {'t': [], 'tasks_created': [], 'tasks_completed': [], 'active_tasks': [], 'throughput': [], 'latency': []}
@@ -266,5 +316,33 @@ def reset_simulation(n_clicks, n_agents_val, width_val, height_val, task_rate_va
     return n_clicks, 'Stopped', status_style, empty_ts
 
 
-# Removed duplicate reset callback that also wrote to ts-store to avoid Dash duplicate outputs error
+@callback(
+    Output('run-status', 'children', allow_duplicate=True),
+    Output('run-status', 'style', allow_duplicate=True),
+    Output('ts-store', 'data', allow_duplicate=True),
+    Input('mode-radio', 'value'),
+    State('n-agents-slider', 'value'),
+    State('width-slider', 'value'),
+    State('height-slider', 'value'),
+    State('task-rate-slider', 'value'),
+    prevent_initial_call=True
+)
+def reset_on_mode_change(mode_value, n_agents_val, width_val, height_val, task_rate_val):
+    running.set(False)
+    auto_stop_deadline.set(None)
+    with model_lock:
+        try:
+            if hasattr(model.get(), 'dsm') and model.get().dsm is not None:
+                model.get().dsm.reset()
+            else:
+                from dsm.api import dsm as GLOBAL_DSM
+                GLOBAL_DSM.reset()
+        except Exception:
+            pass
+        m = create_initial_model(n_agents_val, width_val, height_val, task_rate_val, mode=mode_value)
+        model.set(m)
+    empty_ts = {'t': [], 'tasks_created': [], 'tasks_completed': [], 'active_tasks': [], 'throughput': [], 'latency': []}
+    status_style = {'padding': '6px 10px', 'borderRadius': '6px', 'backgroundColor': '#eee'}
+    return 'Stopped', status_style, empty_ts
+
 

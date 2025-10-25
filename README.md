@@ -20,6 +20,11 @@ This system implements a distributed shared memory architecture for coordinating
 - **Warehouse Topology**: Configurable storage, sortation, and navigation areas
 - **Task Management**: Dynamic task generation with pickup, delivery, and sorting
 - **Performance Metrics**: Comprehensive data collection and analysis
+- **Realistic Timing Model**: 
+  - Movement: 5 seconds per cell (careful navigation with obstacle avoidance)
+  - Task work: 30-60 seconds (item location, scanning, picking/placing, verification)
+  - Expected latencies: 2-8 minutes for typical tasks
+  - Step duration: 0.5s (non-LF) or 0.05s (LF mode for faster simulation)
 
 ### Lingua Franca Coordination
 - **Deterministic Timing**: Real-time coordination with logical time progression

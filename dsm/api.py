@@ -187,9 +187,25 @@ class DSM:
             location = task['location']
             current_time = int(time.time() * 1000)
             self.write_delta('task_signal', {location: 0.0}, current_time)
+            # Keep task in registry with 'completed' status for metrics tracking
+            # Visualization will filter these out
             return True
         return False
 
+    def cleanup_old_tasks(self, keep_recent: int = 1000) -> None:
+        """Remove old completed/failed tasks to prevent memory bloat.
+        Keeps the most recent 'keep_recent' completed tasks for metrics.
+        """
+        completed = [(tid, t.get('completed_ms', 0)) for tid, t in self.task_registry.tasks.items() 
+                     if isinstance(t, dict) and t.get('status') in ['completed', 'failed']]
+        
+        if len(completed) > keep_recent:
+            # Sort by completion time and remove oldest
+            completed.sort(key=lambda x: x[1])
+            to_remove = completed[:-keep_recent]
+            for task_id, _ in to_remove:
+                del self.task_registry.tasks[task_id]
+    
     def reset(self) -> None:
         """Clear all DSM state: tasks, layers, and stats."""
         # Reset layers
