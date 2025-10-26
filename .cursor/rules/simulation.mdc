@@ -1,0 +1,87 @@
+---
+alwaysApply: true
+---
+
+## Warehouse Simulation – Engineering Rules
+
+### Purpose
+- Goal: Compare stigmergy-like distributed shared memory (DSM) vs centralized memory for multi-robot task execution in a warehouse.
+- Outcome: Quantify scalability, efficiency, and coordination overhead under varying load and topology.
+
+### Coding
+- Avoid inline comments. File header comments are just enough. 
+
+### Modes and Feature Flags
+- Simulation modes: distributed (default) vs centralized; inject strategy via a common interface.
+- Time base: Fixed step or LF ticks; map step_interval (ms) to model.step_duration_s.
+
+### Core Invariants
+- Determinism: seed + config => reproducible runs.
+- Task lifecycle: created → available → claimed → completed|failed|expired (timestamps recorded).
+- Safety: Node capacity respected; head‑on collisions prevented via edge reservations.
+- AoI: Reads include age; violations counted against aoi_threshold.
+
+### Agent Behavior
+- State machine: IDLE → NAVIGATING → WORKING → IDLE.
+- Claiming: Prefer nearby tasks within search_radius; retry limited times; release unreachable tasks.
+- Movement: Congestion-aware pathfinding; lateral escape; bounded backoff; use edge reservations.
+- Utilization: utilization = working_steps / total_steps.
+
+### Shared Memory Designs
+- Distributed (stigmergy):
+  - Layers: task_signal, flow_trace, jam_signal; timestamped writes; read_window returns window + peak.
+  - Partitioning pluggable (spatial, spectral, …); halo_radius governs boundary exchange.
+  - Metrics: reads, writes, gossip_messages, aoi_violations, coordination_time, partition_quality.
+- Centralized:
+  - Single authority with same API surface; model/agents unchanged.
+  - Include coordinator latency/queueing in coordination_overhead.
+
+### Metrics (collected in both modes)
+- Performance: tasks_completed, tasks_failed, completion_rate, average_completion_time, agent_utilization, total_distance_traveled.
+- Coordination: total_reads, total_writes, gossip_messages, aoi_violations, partition_quality, coordination_overhead.
+- Time Series: step, cumulative completions, dsm_reads, dsm_writes.
+
+### Configuration Conventions (experiments/configs.yaml)
+- warehouse: size, storage_regions, sortation_regions.
+- agents: count, initial_positions|"random", optional failure_schedule.
+- dsm: partition_strategy, memory_owners, halo_radius, aoi_threshold.
+- tasks: arrival_rate, types, priorities.
+- simulation: duration, step_interval (ms), optional mode (distributed|centralized).
+- seed: fix randomness across model and routing.
+
+### Experiment Design
+- Single-variable sweeps: change one factor per sweep (agents, arrival_rate, partition_strategy, aoi_threshold).
+- Run length: cover warm‑up; consider trimming transient for metrics.
+- Clocking: LF for UI/demo; internal clock for throughput experiments.
+- Output: timestamped CSV summary + JSON detail + plots; never overwrite.
+
+### Performance & Scaling Targets
+- Throughput: aim near-linear up to target agent counts.
+- Overhead: DSM overhead should remain bounded vs centralized queueing growth.
+- Freshness: AoI violations below threshold for effective stigmergy.
+
+### Code Organization Rules
+- world/: model, agents, graph; no UI/I/O.
+- dsm/: memory API + strategies; no agent policy.
+- pathfinder/: routing and costs; pure functions using API reads.
+- experiments/: orchestration, metrics, plots; no agent control logic.
+- dashboard/: UI only; read-only via APIs.
+- Extensibility: Add DSM layers/merges without touching agents; inject via DSM interface.
+
+### Testing & Reproducibility
+- Smoke tests: short runs for each mode with non-zero completions.
+- Determinism: same config+seed → identical summary within tolerance.
+- Regression: fixed example configs; compare key metrics to baselines.
+
+### Telemetry & Logging
+- Progress logs every ~1000 steps: created/completed/active counts, AoI stats.
+- Verbose mode opt-in; keep default logging lightweight.
+
+### Dashboard/UI Rules
+- Non‑blocking: UI must not gate simulation steps; poll/async reads.
+- Visualize: agent states, task locations, congestion heatmaps from DSM layers.
+
+### Glossary
+- AoI: Age of Information (ms).
+- Halo: Border region shared across partitions.
+- Partition Quality: Heuristic for cut size/communication vs balance.

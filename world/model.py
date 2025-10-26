@@ -54,13 +54,15 @@ class WarehouseDSMModel(Model):
                  warehouse_width: int = 20,
                  warehouse_height: int = 10,
                  seed: int = None,
-                 step_duration_s: float = 0.5):
+                 step_duration_s: float = 0.05,
+                 logger=None):
         
         super().__init__(seed=seed)
         
-        # Silence verbose Mesa logging
         import logging
         logging.getLogger("MESA").setLevel(logging.WARNING)
+        
+        self.logger = logger if logger else logging.getLogger(__name__)
         
         if seed is not None:
             self.random.seed(seed)
@@ -188,8 +190,33 @@ class WarehouseDSMModel(Model):
         # Collect data
         self.datacollector.collect(self)
         
-        # Check for termination conditions
-        if self.step_count >= 10000:  # Max steps
+        if self.step_count % 50 == 0:
+            active_count = len(self.active_tasks)
+            completed_count = len(self.completed_tasks)
+            agent_states = {}
+            for agent in self.schedule.agents:
+                state = agent.state.value if hasattr(agent, 'state') else 'unknown'
+                agent_states[state] = agent_states.get(state, 0) + 1
+            
+            state_str = ", ".join([f"{k}={v}" for k, v in sorted(agent_states.items())])
+            self.logger.info(f"Step {self.step_count}: Tasks: {active_count} active, {completed_count} completed | Agents: {state_str}")
+            
+            for agent in self.schedule.agents:
+                x, y = self.warehouse.node_to_pos(agent.node)
+                state = agent.state.value if hasattr(agent, 'state') else 'unknown'
+                task_str = f"task={agent.current_task_id}" if agent.current_task_id else "no_task"
+                
+                target_str = ""
+                if agent.task_location is not None:
+                    tx, ty = self.warehouse.node_to_pos(agent.task_location)
+                    target_str = f" → ({tx},{ty})"
+                
+                path_len = len(agent.path) if agent.path else 0
+                stuck = getattr(agent, 'stuck_counter', 0)
+                
+                self.logger.info(f"  Agent {agent.unique_id}: pos=({x},{y}) state={state} {task_str}{target_str} path={path_len} stuck={stuck}")
+        
+        if self.step_count >= 10000:
             self.running = False
 
     # --- Movement coordination ---
@@ -224,7 +251,6 @@ class WarehouseDSMModel(Model):
     
     def _create_random_task(self):
         """Create a random task at a random location (on any aisle)"""
-        # Prefer explicit pick/pack tiles; fall back to aisles if none exist
         pick_pack_nodes = [n for n in range(self.warehouse.width * self.warehouse.height)
                            if self.warehouse.node_types.get(n) in ('pick_location', 'pack_station')]
         candidate_nodes = pick_pack_nodes
@@ -232,22 +258,28 @@ class WarehouseDSMModel(Model):
             candidate_nodes = [n for n in range(self.warehouse.width * self.warehouse.height)
                                if self.warehouse.node_types.get(n) == 'aisle']
 
-        if candidate_nodes:
-            location = self.random.choice(candidate_nodes)
+        occupied_nodes = set(self.get_warehouse_occupancy().keys())
+        available_nodes = [n for n in candidate_nodes if n not in occupied_nodes]
+
+        if not available_nodes:
+            return
+
+        if available_nodes:
+            location = self.random.choice(available_nodes)
             
-            # Debug: log task locations occasionally
-            if self.step_count % 100 == 0:
-                print(f"Step {self.step_count}: {len(candidate_nodes)} possible task locations, spawned at node {location}")
+            if self.step_count % 10 == 0:
+                self.logger.info(f"Step {self.step_count}: {len(available_nodes)}/{len(candidate_nodes)} unoccupied locations, spawned at node {location}")
             
             # Create task in DSM
             dsm_api = self.dsm if self.dsm is not None else dsm
             task_id = dsm_api.create_task(location)
             
-            # Track locally
+            sim_time = self.step_count * self.step_duration_s
             self.active_tasks[task_id] = {
                 'location': location,
                 'created_step': self.step_count,
-                'created_time': time.time()
+                'created_time': sim_time,
+                'start_time': sim_time
             }
             
             self.task_counter += 1
@@ -264,15 +296,20 @@ class WarehouseDSMModel(Model):
                 # Task is a dict with 'status' key
                 if task.get('status') in ['completed', 'failed', 'expired']:
                     completed_tasks.append(task_id)
-                    # Track completion
                     if task.get('status') == 'completed':
-                        self.completed_tasks.append(task_id)
+                        completion_time = self.step_count * self.step_duration_s
+                        task_record = {
+                            'task_id': task_id,
+                            'start_time': task_info.get('start_time'),
+                            'completion_time': completion_time
+                        }
+                        self.completed_tasks.append(task_record)
                         # Record latency if we have creation time
                         created_time = task_info.get('created_time')
                         if created_time:
-                            self.completed_latencies.append(time.time() - created_time)
+                            self.completed_latencies.append(completion_time - created_time)
                     else:
-                        self.failed_tasks.append(task_id)
+                        self.failed_tasks.append({'task_id': task_id})
         
         for task_id in completed_tasks:
             del self.active_tasks[task_id]

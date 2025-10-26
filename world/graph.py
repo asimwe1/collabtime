@@ -116,19 +116,17 @@ class WarehouseGraph:
     
     def _add_special_nodes(self):
         """Add special-purpose nodes like docks, charging stations"""
-        # Pick some TRAVERSABLE storage nodes (aisles/staging only) as pick locations
         storage_nodes = [n for n in self.regions['storage'] 
-                        if self.node_types.get(n) in ('aisle', 'staging')]
+                        if self.node_types.get(n) == 'aisle']
         if storage_nodes:
             pick_locations = random.sample(storage_nodes, min(6, len(storage_nodes)))
             
             for node in pick_locations:
                 self.node_types[node] = 'pick_location'
-                self.capacities[node] = 1  # Only one agent at pick location
+                self.capacities[node] = 1
         
-        # Pick some TRAVERSABLE sortation nodes (aisles/staging only) as pack stations
         sortation_nodes = [n for n in self.regions['sortation'] 
-                          if self.node_types.get(n) in ('aisle', 'staging')]
+                          if self.node_types.get(n) == 'aisle']
         if sortation_nodes:
             pack_stations = random.sample(sortation_nodes, min(5, len(sortation_nodes)))
             

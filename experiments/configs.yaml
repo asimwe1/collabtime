@@ -19,17 +19,17 @@ experiments:
       initial_positions: [[1, 1], [8, 8], [1, 8], [8, 1]]
     dsm:
       partition_strategy: "spatial"
-      memory_owners: 2
+      memory_owners: 4
       halo_radius: 2
-      gossip_interval: 150  # ms
       aoi_threshold: 1000   # ms (1 second)
     tasks:
       arrival_rate: 0.2      # tasks per second
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 2, 1]  # weights for task type generation
     simulation:
-      duration: 600          # 10 minutes
+      duration: 300          # 10 minutes
       step_interval: 50      # ms per step
+      mode: distributed      # distributed|centralized
 
   # Medium scale test  
   scaling_medium:
@@ -52,15 +52,15 @@ experiments:
       partition_strategy: "spectral"
       memory_owners: 4
       halo_radius: 3
-      gossip_interval: 100
       aoi_threshold: 800
     tasks:
       arrival_rate: 0.5
       types: ["pickup", "delivery", "sort", "maintenance"]
       priorities: [2, 3, 2, 1]
     simulation:
-      duration: 600  # 10 minutes
+      duration: 300  # 10 minutes
       step_interval: 50
+      mode: distributed
 
   # High load stress test
   stress_high_load:
@@ -83,7 +83,6 @@ experiments:
       partition_strategy: "spatial"
       memory_owners: 6
       halo_radius: 2
-      gossip_interval: 75   # faster gossip
       aoi_threshold: 500    # stricter freshness
     tasks:
       arrival_rate: 1.2     # high task rate
@@ -92,6 +91,7 @@ experiments:
     simulation:
       duration: 900  # 15 minutes
       step_interval: 50
+      mode: distributed
 
   # Fault tolerance test
   fault_tolerance:
@@ -113,22 +113,22 @@ experiments:
         - {agent_id: 4, time: 300, duration: 120}  # agent 4 fails at 5min for 2min
     dsm:
       partition_strategy: "spectral"
-      memory_owners: 3
+      memory_owners: 4
       halo_radius: 3
-      gossip_interval: 120
       aoi_threshold: 1200   # more tolerance during failures
     tasks:
       arrival_rate: 0.4
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 1, 1]
     simulation:
-      duration: 600
+      duration: 300
       step_interval: 50
+      mode: distributed
 
-  # Communication delay test
-  network_latency:
-    name: "Network Latency"
-    description: "Test with simulated network delays"
+  # Centralized reference run
+  centralized_baseline:
+    name: "Centralized Baseline"
+    description: "Centralized memory baseline/reference run"
     warehouse:
       size: [18, 12]
       storage_regions:
@@ -138,25 +138,21 @@ experiments:
         - {center: [9, 1], radius: 1}
         - {center: [9, 11], radius: 1}
     agents:
-      count: 6
+      count: 8
       initial_positions: "random"
     dsm:
       partition_strategy: "spatial"
-      memory_owners: 3
+      memory_owners: 4
       halo_radius: 2
-      gossip_interval: 200   # slower gossip
-      aoi_threshold: 2000    # accommodate delays
-      network_delay:
-        min: 10    # ms
-        max: 100   # ms
-        jitter: 20 # ms variance
+      aoi_threshold: 1000
     tasks:
-      arrival_rate: 0.3
+      arrival_rate: 0.4
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 1, 1]
     simulation:
-      duration: 450
+      duration: 300
       step_interval: 50
+      mode: centralized
 
 # Default metrics to collect across all experiments
 metrics:
@@ -187,3 +183,4 @@ output:
     - "agent_trajectories" 
     - "dsm_performance_metrics"
     - "system_resource_usage"
+    - "dashboard_style"

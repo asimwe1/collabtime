@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from world.model import WarehouseDSMModel
+from config import STEP_DURATION_S
 import threading
 import time
 
@@ -40,8 +41,7 @@ auto_stop_deadline = GlobalState(None)  # wall-clock deadline (epoch seconds)
 
 def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: str = 'centralized', num_shards: int = 4):
     """Create a new model instance (centralized or distributed)."""
-    # Determine step duration based on LF vs internal timing
-    step_dt = 0.05 if use_lf.get() else 0.5
+    step_dt = STEP_DURATION_S
 
     dsm_instance = None
     if mode == 'distributed':
@@ -53,13 +53,37 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: s
         except Exception:
             dsm_instance = None
 
+    import logging
+    import sys
+    from pathlib import Path
+    
+    dashboard_logger = logging.getLogger('WarehouseDashboard')
+    if not dashboard_logger.handlers:
+        log_dir = Path(__file__).parent.parent / 'results'
+        log_dir.mkdir(exist_ok=True)
+        
+        file_handler = logging.FileHandler(log_dir / 'dashboard.log')
+        file_handler.setLevel(logging.INFO)
+        
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter('%(message)s')
+        file_handler.setFormatter(formatter)
+        stream_handler.setFormatter(formatter)
+        
+        dashboard_logger.addHandler(file_handler)
+        dashboard_logger.addHandler(stream_handler)
+        dashboard_logger.setLevel(logging.INFO)
+    
     return WarehouseDSMModel(
         n_agents=n_agents,
         warehouse_width=width,
         warehouse_height=height,
-        task_arrival_rate=task_rate,  # interpret as tasks/sec
+        task_arrival_rate=task_rate,
         step_duration_s=step_dt,
         dsm=dsm_instance,
+        logger=dashboard_logger,
     )
 
 

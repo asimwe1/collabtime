@@ -5,6 +5,7 @@ Dash callbacks for interactivity.
 from dash import html, Input, Output, State, callback
 from dash import dcc
 import time
+from config import STEP_DURATION_S
 from .visualization import create_warehouse_figure
 from .state import model, model_lock, running, create_initial_model, use_lf, auto_stop_deadline
 
@@ -47,13 +48,10 @@ def update_visualization(n_intervals, start_clicks, stop_clicks, step_clicks, re
         for a in m.schedule.agents:
             states[a.state.value] = states.get(a.state.value, 0) + 1
         
-        # Step duration depends on LF vs internal timing
-        step_dt = 0.05 if use_lf.get() else 0.5
+        step_dt = STEP_DURATION_S
         
-        # Calculate instantaneous throughput from time-series data (recent rate)
         throughput = 0.0
         if len(ts_store.get('t', [])) >= 2 and len(ts_store.get('tasks_completed', [])) >= 2:
-            # Look at completions over last 30 seconds (or available data)
             window_duration = 30.0  # seconds
             current_t = m.step_count * step_dt
             
