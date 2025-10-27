@@ -74,7 +74,7 @@ alwaysApply: true
 - Regression: fixed example configs; compare key metrics to baselines.
 
 ### Telemetry & Logging
-- Progress logs every ~1000 steps: created/completed/active counts, AoI stats.
+- Progress logs every ~100 steps: created/completed/active counts, AoI stats.
 - Verbose mode opt-in; keep default logging lightweight.
 
 ### Dashboard/UI Rules

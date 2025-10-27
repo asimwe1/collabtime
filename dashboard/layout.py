@@ -44,8 +44,8 @@ def create_layout():
                 
                 html.Div([
                     html.Label('Task Arrival Rate (tasks/sec):', style={'fontWeight': 'bold'}),
-                    dcc.Slider(id='task-rate-slider', min=0.0, max=5.0, step=0.05, value=0.5,
-                              marks={i: f'{i}' for i in range(0, 6)},
+                    dcc.Slider(id='task-rate-slider', min=0.0, max=0.2, step=0.005, value=0.025,
+                              marks={i*0.05: f'{i*0.05:.2f}' for i in range(0, 5)},
                               tooltip={"placement": "bottom", "always_visible": True}),
                 ], style={'width': '45%', 'display': 'inline-block', 'padding': '10px'}),
             ]),

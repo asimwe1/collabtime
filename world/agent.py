@@ -18,7 +18,13 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dsm.api import dsm
 from pathfinder import astar_with_congestion
-from config import TASK_WORK_DURATION_STEPS
+from config import (
+    TASK_WORK_DURATION_STEPS,
+    MOVEMENT_DURATION_STEPS,
+    LATERAL_MOVE_DURATION_STEPS,
+    STUCK_TIMEOUT_STEPS,
+    REPLAN_ATTEMPTS
+)
 
 
 class AgentState(Enum):
@@ -75,12 +81,25 @@ class RobotAgent(mesa.Agent):
         if self.steps_total > 0:
             self.utilization = self.steps_working / self.steps_total
         
+        self._validate_state()
+        
         if self.state == AgentState.IDLE:
             self._handle_idle()
         elif self.state == AgentState.NAVIGATING:
             self._handle_navigating()
         elif self.state == AgentState.WORKING:
             self._handle_working()
+    
+    def _validate_state(self):
+        """Validate agent state consistency and log anomalies"""
+        if self.state == AgentState.WORKING and self.current_task_id is None:
+            self.model.logger.error(f"Agent {self.unique_id}: INCONSISTENT STATE - WORKING but current_task_id=None at step {self.steps_total}")
+        
+        if self.state == AgentState.NAVIGATING and self.current_task_id is None:
+            self.model.logger.error(f"Agent {self.unique_id}: INCONSISTENT STATE - NAVIGATING but current_task_id=None at step {self.steps_total}")
+        
+        if self.current_task_id is not None and self.state == AgentState.IDLE:
+            self.model.logger.error(f"Agent {self.unique_id}: INCONSISTENT STATE - IDLE but has task {self.current_task_id} at step {self.steps_total}")
     
     def _handle_idle(self):
         """Look for nearby unclaimed tasks and claim one"""
@@ -95,10 +114,11 @@ class RobotAgent(mesa.Agent):
             self._idle_wander_to_staging()
             return
         
-        if hasattr(self, '_moving_to_staging'):
-            self._moving_to_staging = False
+        self._moving_to_staging = False
         if hasattr(self, '_target_staging_node'):
             delattr(self, '_target_staging_node')
+        self.path = []
+        self.movement_timer = 0
         
         occupancy = self.model.get_warehouse_occupancy()
         
@@ -139,21 +159,24 @@ class RobotAgent(mesa.Agent):
                 attempted_ids.add(task_id)
                 # Try to claim the task
                 if dsm_api.claim(task_id, self.unique_id):
+                    self.model.logger.info(f"Agent {self.unique_id}: CLAIMED task {task_id} at location {task_location}")
                     self.current_task_id = task_id
                     self.task_location = task_location
                     self.metrics['tasks_claimed'] += 1
                     
                     if self.node == task_location:
+                        self.model.logger.info(f"Agent {self.unique_id}: IDLE->WORKING (claimed task {task_id} already at location {task_location})")
                         self.state = AgentState.WORKING
                         self.work_timer = self.work_duration
                         self.path = []
                         self.stuck_counter = 0
+                        return
+                    
+                    self.path = self._plan_path(self.node, task_location)
+                    if self.path:
+                        self.state = AgentState.NAVIGATING
                     else:
-                        self.path = self._plan_path(self.node, task_location)
-                        if self.path:
-                            self.state = AgentState.NAVIGATING
-                        else:
-                            self._fail_current_task()
+                        self._fail_current_task()
                     return
                 attempts += 1
                 # try the next best remaining candidate with some randomization
@@ -171,6 +194,11 @@ class RobotAgent(mesa.Agent):
     
     def _handle_navigating(self):
         """Move along path towards task location"""
+        if self.current_task_id is None or self.task_location is None:
+            self.state = AgentState.IDLE
+            self.path = []
+            return
+        
         if self.node == self.task_location:
             dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
             task = dsm_api.task_registry.tasks.get(self.current_task_id)
@@ -183,6 +211,7 @@ class RobotAgent(mesa.Agent):
                 self._fail_current_task()
                 return
             
+            self.model.logger.info(f"Agent {self.unique_id}: NAVIGATING->WORKING (arrived at task {self.current_task_id} location {self.task_location})")
             self.state = AgentState.WORKING
             self.work_timer = self.work_duration
             self.stuck_counter = 0
@@ -207,22 +236,21 @@ class RobotAgent(mesa.Agent):
         next_node = self.path[1]  # path[0] is current node
         
         if self._can_move_to(next_node) and self._reserve_edge(self.node, next_node):
-            # Start moving to next node (takes 5 steps per cell for realistic speed)
             distance = self._calculate_distance(self.node, next_node)
             self.metrics['total_distance'] += distance
             self.total_distance += distance
             
-            # Write flow trace to DSM for congestion awareness
             self._write_flow_trace(self.node, next_node)
             
             self.node = next_node
             self.path.pop(0)
-            self.movement_timer = 5  # Takes 5 simulation steps to move one cell
-            self.stuck_counter = 0  # Reset stuck counter
+            self.movement_timer = MOVEMENT_DURATION_STEPS
+            self.stuck_counter = 0
         else:
             self.stuck_counter += 1
             
-            if self.stuck_counter > 12:
+            if self.stuck_counter > STUCK_TIMEOUT_STEPS:
+                self._write_jam_signal()
                 self._fail_current_task()
                 return
             
@@ -230,35 +258,41 @@ class RobotAgent(mesa.Agent):
                 self.stuck_counter = 0
                 return
             
-            if self.stuck_counter in (2, 4, 8):
+            if self.stuck_counter in REPLAN_ATTEMPTS:
                 self.path = self._plan_path(self.node, self.task_location)
+            
+            if self.stuck_counter % 20 == 0:
+                self._write_jam_signal()
     
     def _handle_working(self):
         """Execute work at task location"""
-        if self.current_task_id is None or self.work_timer <= 0:
-            if self.current_task_id is None:
-                self.state = AgentState.IDLE
-                self.task_location = None
-                self.path = []
-                return
+        if self.current_task_id is None:
+            self.model.logger.warning(f"Agent {self.unique_id}: BUG CAUGHT - in WORKING state with no task! Recovering to IDLE at pos={self.node}")
+            self.state = AgentState.IDLE
+            self.task_location = None
+            self.path = []
+            self.work_timer = 0
+            return
+        
+        if self.work_timer <= 0:
+            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
+            self.model.logger.info(f"Agent {self.unique_id}: COMPLETED task {self.current_task_id} at location {self.task_location}")
+            dsm_api.complete_task(self.current_task_id)
+            self.metrics['tasks_completed'] += 1
             
-            if self.work_timer <= 0:
-                dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-                dsm_api.complete_task(self.current_task_id)
-                self.metrics['tasks_completed'] += 1
-                
-                self.current_task_id = None
-                self.task_location = None
-                self.path = []
-                self.stuck_counter = 0
-                
-                occupancy = self.model.get_warehouse_occupancy()
-                if occupancy.get(self.node, 0) > 1:
-                    delattr(self, '_target_staging_node') if hasattr(self, '_target_staging_node') else None
-                    self._moving_to_staging = False
-                
-                self.state = AgentState.IDLE
-                return
+            self.current_task_id = None
+            self.task_location = None
+            self.path = []
+            self.stuck_counter = 0
+            self.work_timer = 0
+            
+            occupancy = self.model.get_warehouse_occupancy()
+            if occupancy.get(self.node, 0) > 1:
+                delattr(self, '_target_staging_node') if hasattr(self, '_target_staging_node') else None
+                self._moving_to_staging = False
+            
+            self.state = AgentState.IDLE
+            return
         
         self.work_timer -= 1
     
@@ -299,7 +333,8 @@ class RobotAgent(mesa.Agent):
     
     def _fail_current_task(self):
         """Fail the current task and clean up"""
-        if self.current_task_id:
+        if self.current_task_id is not None:
+            self.model.logger.info(f"Agent {self.unique_id}: FAILED task {self.current_task_id} - releasing back to available")
             dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
             task = dsm_api.task_registry.tasks.get(self.current_task_id)
             if task and isinstance(task, dict) and task.get('status') == 'claimed' and task.get('agent_id') == self.unique_id:
@@ -311,13 +346,13 @@ class RobotAgent(mesa.Agent):
             self.task_location = None
             self.path = []
         
-        self.stuck_counter = 0
         self.state = AgentState.IDLE
+        self.stuck_counter = 0
     
     def _reserve_edge(self, from_node: int, to_node: int) -> bool:
         """Request edge reservation from the model for conflict-free move."""
         try:
-            return self.model.try_reserve_edge(from_node, to_node, duration_steps=5)
+            return self.model.try_reserve_edge(from_node, to_node, duration_steps=MOVEMENT_DURATION_STEPS)
         except Exception:
             return True
     
@@ -327,8 +362,18 @@ class RobotAgent(mesa.Agent):
             import time
             dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
             current_time_ms = int(time.time() * 1000)
-            # Write increment to flow_trace at destination node
             dsm_api.write_delta('flow_trace', {to_node: 1.0}, current_time_ms)
+        except Exception:
+            pass
+    
+    def _write_jam_signal(self):
+        """Write jam signal to DSM when agent is stuck."""
+        try:
+            import time
+            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
+            current_time_ms = int(time.time() * 1000)
+            jam_value = min(5.0, self.stuck_counter / 50.0)
+            dsm_api.write_delta('jam_signal', {self.node: jam_value}, current_time_ms)
         except Exception:
             pass
     
@@ -347,13 +392,12 @@ class RobotAgent(mesa.Agent):
             hx, hy = self.model.warehouse.node_to_pos(self.task_location)
             nx, ny = self.model.warehouse.node_to_pos(self.node)
             base_h = abs(hx - nx) + abs(hy - ny)
-            # Prefer moves that keep or slightly improve heuristic
             candidates = []
             for nb in neighbors:
                 if self._can_move_to(nb):
                     x, y = self.model.warehouse.node_to_pos(nb)
                     h = abs(hx - x) + abs(hy - y)
-                    if h <= base_h + 1:
+                    if h <= base_h:
                         candidates.append((h, nb))
             if not candidates:
                 return False
@@ -366,7 +410,7 @@ class RobotAgent(mesa.Agent):
                 self.total_distance += distance
                 self._write_flow_trace(self.node, next_nb)
                 self.node = next_nb
-                self.movement_timer = 2
+                self.movement_timer = LATERAL_MOVE_DURATION_STEPS
                 return True
             return False
         except Exception:
@@ -396,7 +440,7 @@ class RobotAgent(mesa.Agent):
                     self.total_distance += distance
                     self.node = next_node
                     self.path.pop(0)
-                    self.movement_timer = 5
+                    self.movement_timer = MOVEMENT_DURATION_STEPS
             else:
                 self._moving_to_staging = False
     

@@ -22,7 +22,12 @@ from datetime import datetime
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import STEP_DURATION_S
+from config import (
+    STEP_DURATION_S,
+    calculate_task_latency,
+    calculate_agent_capacity,
+    TASK_WORK_DURATION_S
+)
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -81,7 +86,6 @@ class ExperimentRunner:
             level=logging.INFO,
             format=log_format,
             handlers=[
-                logging.FileHandler(self.output_dir / 'experiments.log'),
                 logging.StreamHandler()
             ]
         )
@@ -130,21 +134,71 @@ class ExperimentRunner:
     
     def run_single_experiment(self, config_name: str, config: Dict, use_lf: bool = False) -> ExperimentResult:
         """Run a single experiment configuration."""
-        self.logger.info(f"Starting experiment: {config_name}")
+        sim_mode = config.get('simulation', {}).get('mode', 'distributed')
+        
+        mode_dir = self.output_dir / ('distributed' if sim_mode == 'distributed' else 'centralized')
+        mode_dir.mkdir(parents=True, exist_ok=True)
+        
+        mode_log_path = mode_dir / 'experiments.log'
+        mode_file_handler = logging.FileHandler(mode_log_path)
+        mode_file_handler.setLevel(logging.INFO)
+        mode_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        
+        self.logger.addHandler(mode_file_handler)
+        
+        self.logger.info("=" * 70)
+        self.logger.info(f"EXPERIMENT: {config_name}")
+        self.logger.info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info("=" * 70)
+        
+        warehouse_size = config['warehouse']['size']
+        num_agents = config['agents']['count']
+        task_rate = config['tasks']['arrival_rate']
+        duration = config['simulation']['duration']
+        step_interval = config['simulation']['step_interval']
+        
+        task_latency = calculate_task_latency(warehouse_size[0], warehouse_size[1])
+        agent_capacity = calculate_agent_capacity(warehouse_size[0], warehouse_size[1])
+        system_capacity = num_agents * agent_capacity
+        utilization = task_rate / system_capacity if system_capacity > 0 else 0
+        
+        aoi_threshold = config.get('aoi_threshold', config.get('dsm', {}).get('aoi_threshold', 1000))
+        
+        self.logger.info(f"Memory Architecture: {sim_mode.upper()}")
+        if sim_mode == 'distributed' and 'dsm' in config:
+            num_shards = max(1, int(config['dsm'].get('memory_owners', 1)))
+            self.logger.info(f"  DSM Shards: {num_shards}")
+            self.logger.info(f"  Partition Strategy: {config['dsm'].get('partition_strategy', 'N/A')}")
+            self.logger.info(f"  Halo Radius: {config['dsm'].get('halo_radius', 'N/A')}")
+        self.logger.info(f"  AoI Threshold: {aoi_threshold}ms")
+        self.logger.info(f"Warehouse Dimensions: {warehouse_size[0]} × {warehouse_size[1]} = {warehouse_size[0] * warehouse_size[1]} cells")
+        self.logger.info(f"Agents: {num_agents}")
+        self.logger.info(f"Simulation Duration: {duration}s ({int(duration * 1000 / step_interval)} steps)")
+        self.logger.info(f"Step Duration: {STEP_DURATION_S:.3f}s ({int(STEP_DURATION_S * 1000)}ms)")
+        self.logger.info(f"Timing Mode: {'LF-coordinated' if use_lf else 'Fast-as-possible'}")
+        self.logger.info("")
+        self.logger.info("Capacity Analysis (for this warehouse size):")
+        self.logger.info(f"  Avg Task Distance: {(warehouse_size[0] + warehouse_size[1]) / 3:.1f} cells")
+        self.logger.info(f"  Typical Task Latency: {task_latency:.1f}s")
+        self.logger.info(f"  Agent Capacity: {agent_capacity:.4f} tasks/sec")
+        self.logger.info(f"  System Capacity ({num_agents} agents): {system_capacity:.4f} tasks/sec")
+        self.logger.info(f"  Task Arrival Rate: {task_rate:.4f} tasks/sec")
+        self.logger.info(f"  Expected Utilization: {utilization:.1%}")
+        self.logger.info("=" * 70)
+        self.logger.info("")
+        
         start_time = datetime.now()
         
         try:
-            # Create warehouse graph
             warehouse_graph = self.create_warehouse_graph(config['warehouse'])
             
-            # Generate agent positions
             agent_positions = self.generate_agent_positions(config['agents'], warehouse_graph)
             
-            # Initialize DSM with configuration (centralized vs distributed)
-            dsm_config = config['dsm']
             sim_mode = config.get('simulation', {}).get('mode', 'distributed')
+            aoi_threshold = config.get('aoi_threshold', config.get('dsm', {}).get('aoi_threshold', 1000))
 
-            if sim_mode == 'distributed' and DSMRouter is not None and default_region_mapper is not None:
+            if sim_mode == 'distributed' and 'dsm' in config and DSMRouter is not None and default_region_mapper is not None:
+                dsm_config = config['dsm']
                 num_shards = max(1, int(dsm_config.get('memory_owners', 1)))
                 width = getattr(warehouse_graph, 'width', config['warehouse']['size'][0])
 
@@ -156,17 +210,17 @@ class ExperimentRunner:
                         memory_owners=dsm_config['memory_owners'],
                         partition_strategy=dsm_config['partition_strategy'],
                         halo_radius=dsm_config['halo_radius'],
-                        aoi_threshold=dsm_config['aoi_threshold']
+                        aoi_threshold=dsm_config.get('aoi_threshold', aoi_threshold)
                     )
 
                 dsm = DSMRouter(num_shards=num_shards, node_to_shard=node_to_shard, dsm_factory=dsm_factory)
                 self.logger.info(f"Initialized DISTRIBUTED DSM with {num_shards} shards (mode=distributed)")
             else:
                 dsm = DSM(
-                    memory_owners=dsm_config['memory_owners'],
-                    partition_strategy=dsm_config['partition_strategy'],
-                    halo_radius=dsm_config['halo_radius'],
-                    aoi_threshold=dsm_config['aoi_threshold']
+                    memory_owners=1,
+                    partition_strategy='none',
+                    halo_radius=0,
+                    aoi_threshold=aoi_threshold
                 )
                 if sim_mode == 'distributed':
                     self.logger.info("Requested distributed mode but router unavailable; falling back to CENTRALIZED DSM")
@@ -192,7 +246,6 @@ class ExperimentRunner:
             
             self.logger.info(f"Running {steps} steps over {duration}s")
             
-            # Collect metrics during simulation
             metrics_data = []
             
             if use_lf:
@@ -280,12 +333,16 @@ class ExperimentRunner:
             
             self.logger.error(f"Failed experiment: {config_name} - {e}\n{full_trace}")
             return result
+        finally:
+            self.logger.removeHandler(mode_file_handler)
+            mode_file_handler.close()
     
     def collect_step_metrics(self, model: WarehouseDSMModel, step: int) -> Dict:
         """Collect metrics for a single simulation step."""
         return {
             'step': step,
             'timestamp': time.time(),
+            'tasks_created': model.task_counter,
             'tasks_completed': len([t for t in model.completed_tasks]),
             'tasks_active': len([t for t in model.active_tasks]),
             'agent_states': [agent.state for agent in model.schedule.agents],
@@ -301,7 +358,7 @@ class ExperimentRunner:
         df = pd.DataFrame(step_data)
         
         # Performance metrics
-        total_tasks = len(model.completed_tasks) + len(model.failed_tasks)
+        total_tasks = model.task_counter
         
         # Extract completion times from task records (now dicts with timestamps)
         completion_times = []
@@ -342,7 +399,9 @@ class ExperimentRunner:
         
         # Time series data
         time_series = {
+            'tasks_created_timeline': df['tasks_created'].tolist(),
             'task_completion_timeline': df['tasks_completed'].tolist(),
+            'tasks_active_timeline': df['tasks_active'].tolist(),
             'dsm_reads_timeline': df['dsm_reads'].tolist(),
             'dsm_writes_timeline': df['dsm_writes'].tolist(),
             'steps': df['step'].tolist(),
@@ -445,47 +504,7 @@ class ExperimentRunner:
             self.logger.warning("No successful experiments to plot")
             return
         
-        # Task completion timeline
-        plt.figure(figsize=(12, 8))
-        for result in successful_results:
-            if 'time_series' in result.metrics:
-                steps = result.metrics['time_series']['steps']
-                completed = result.metrics['time_series']['task_completion_timeline']
-                plt.plot(steps, completed, label=result.config_name, marker='o', markersize=2)
-        
-        plt.xlabel('Simulation Step')
-        plt.ylabel('Cumulative Tasks Completed')
-        plt.title('Task Completion Timeline Across Experiments')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(self.output_dir / f'task_completion_timeline_{timestamp}.png', dpi=300)
-        plt.close()
-        
-        # Performance comparison
-        config_names = [r.config_name for r in successful_results]
-        completion_rates = [r.metrics['performance']['completion_rate'] for r in successful_results]
-        avg_times = [r.metrics['performance']['average_completion_time'] for r in successful_results]
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Completion rates
-        ax1.bar(config_names, completion_rates)
-        ax1.set_title('Task Completion Rate by Experiment')
-        ax1.set_ylabel('Completion Rate')
-        ax1.tick_params(axis='x', rotation=45)
-        
-        # Average completion times
-        ax2.bar(config_names, avg_times)
-        ax2.set_title('Average Task Completion Time')
-        ax2.set_ylabel('Time (seconds)')
-        ax2.tick_params(axis='x', rotation=45)
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / f'performance_comparison_{timestamp}.png', dpi=300)
-        plt.close()
-        
-        self.logger.info(f"Generated plots saved to {self.output_dir}")
+        self.logger.info(f"Plots saved to {self.output_dir}")
 
     def _calculate_throughput_series(self, completed_timeline: List[int], time_points: List[float], window_s: float = 30.0) -> List[float]:
         """Calculate moving average throughput over time (tasks per second)."""
@@ -508,12 +527,12 @@ class ExperimentRunner:
                 
                 if actual_window > 0:
                     tps = (completed_now - completed_at_start) / actual_window
-                    throughput.append(tps)
+                    throughput.append(tps * 60.0)
                 else:
                     throughput.append(0.0)
             else:
                 if current_time > 0:
-                    throughput.append(completed_timeline[i] / current_time)
+                    throughput.append(completed_timeline[i] / current_time * 60.0)
                 else:
                     throughput.append(0.0)
         
@@ -556,7 +575,9 @@ class ExperimentRunner:
             perf = r.metrics.get('performance', {})
             ts = r.metrics.get('time_series', {})
             steps = ts.get('steps', [])
+            created = ts.get('tasks_created_timeline', [])
             completed = ts.get('task_completion_timeline', [])
+            active = ts.get('tasks_active_timeline', [])
             lat_samples = ts.get('latency_samples_s', [])
             step_interval_ms = perf.get('step_interval_ms', 100)
             step_dt = step_interval_ms / 1000.0
@@ -565,41 +586,59 @@ class ExperimentRunner:
             throughput_series = self._calculate_throughput_series(completed, time_points, window_s=30.0)
             latency_series = self._calculate_latency_series(lat_samples, completed, window_size=50)
             
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(2, 2, figsize=(18, 10))
+            axes = axes.flatten()
             
-            # Timeline
-            if time_points and completed:
-                axes[0].plot(time_points, completed, color='tab:blue', linewidth=2)
-            axes[0].set_title(f"Timeline: {r.config_name}")
-            axes[0].set_xlabel('Time (s)')
-            axes[0].set_ylabel('Cumulative completions')
-            axes[0].grid(True, alpha=0.3)
-            
-            # Latency - continuous plot with rolling average
-            if latency_series:
-                lat_time_points = time_points[:len(latency_series)]
-                axes[1].plot(lat_time_points, latency_series, color='tab:green', linewidth=2, label='Rolling avg (50 tasks)')
-                axes[1].set_title('Latency over time')
-                axes[1].set_xlabel('Time (s)')
-                axes[1].set_ylabel('Latency (s)')
-                axes[1].legend()
-                axes[1].grid(True, alpha=0.3)
+            # Task Timeline - created/completed/active
+            if time_points and created and completed and active:
+                axes[0].plot(time_points, created, color='tab:blue', linewidth=2, label='Created', alpha=0.8)
+                axes[0].plot(time_points, completed, color='tab:green', linewidth=2, label='Completed', alpha=0.8)
+                axes[0].plot(time_points, active, color='tab:orange', linewidth=2, label='Active', alpha=0.8)
+                axes[0].set_title(f"Task Timeline: {r.config_name}")
+                axes[0].set_xlabel('Time (s)')
+                axes[0].set_ylabel('Task Count')
+                axes[0].legend()
+                axes[0].grid(True, alpha=0.3)
             else:
-                axes[1].text(0.5, 0.5, 'No latency data', ha='center', va='center', transform=axes[1].transAxes)
-                axes[1].set_title('Latency over time')
+                axes[0].text(0.5, 0.5, 'No task timeline data', ha='center', va='center', transform=axes[0].transAxes)
+                axes[0].set_title(f"Task Timeline: {r.config_name}")
             
             # Throughput - continuous plot with 30s moving average
             if throughput_series:
                 thr_time_points = time_points[:len(throughput_series)]
-                axes[2].plot(thr_time_points, throughput_series, color='tab:orange', linewidth=2, label='30s moving avg')
-                axes[2].set_title('Throughput over time')
+                axes[1].plot(thr_time_points, throughput_series, color='tab:orange', linewidth=2, label='30s moving avg')
+                axes[1].set_title('Throughput over time')
+                axes[1].set_xlabel('Time (s)')
+                axes[1].set_ylabel('Tasks/min')
+                axes[1].legend()
+                axes[1].grid(True, alpha=0.3)
+            else:
+                axes[1].text(0.5, 0.5, 'No throughput data', ha='center', va='center', transform=axes[1].transAxes)
+                axes[1].set_title('Throughput over time')
+            
+            # Latency - continuous plot with rolling average
+            if latency_series:
+                lat_time_points = time_points[:len(latency_series)]
+                axes[2].plot(lat_time_points, latency_series, color='tab:green', linewidth=2, label='Rolling avg (50 tasks)')
+                axes[2].set_title('Latency over time')
                 axes[2].set_xlabel('Time (s)')
-                axes[2].set_ylabel('Tasks/sec')
+                axes[2].set_ylabel('Latency (s)')
                 axes[2].legend()
                 axes[2].grid(True, alpha=0.3)
             else:
-                axes[2].text(0.5, 0.5, 'No throughput data', ha='center', va='center', transform=axes[2].transAxes)
-                axes[2].set_title('Throughput over time')
+                axes[2].text(0.5, 0.5, 'No latency data', ha='center', va='center', transform=axes[2].transAxes)
+                axes[2].set_title('Latency over time')
+            
+            # Cumulative Completions (original timeline)
+            if time_points and completed:
+                axes[3].plot(time_points, completed, color='tab:blue', linewidth=2)
+                axes[3].set_title('Cumulative Completions')
+                axes[3].set_xlabel('Time (s)')
+                axes[3].set_ylabel('Tasks Completed')
+                axes[3].grid(True, alpha=0.3)
+            else:
+                axes[3].text(0.5, 0.5, 'No completion data', ha='center', va='center', transform=axes[3].transAxes)
+                axes[3].set_title('Cumulative Completions')
             
             plt.tight_layout()
             out_png = self.output_dir / f"dashboard_report_{r.config_name}_{timestamp}.png"

@@ -7,9 +7,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from world.model import WarehouseDSMModel
-from config import STEP_DURATION_S
+from config import (
+    STEP_DURATION_S, 
+    DEFAULT_TASK_ARRIVAL_RATE,
+    calculate_task_latency,
+    calculate_agent_capacity,
+    TASK_WORK_DURATION_S
+)
 import threading
 import time
+import logging
+from datetime import datetime
 
 # Optional: LF integration
 try:
@@ -39,8 +47,10 @@ use_lf = GlobalState(False)
 auto_stop_deadline = GlobalState(None)  # wall-clock deadline (epoch seconds)
 
 
-def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: str = 'centralized', num_shards: int = 4):
+def create_initial_model(n_agents=8, width=20, height=15, task_rate=None, mode: str = 'centralized', num_shards: int = 4):
     """Create a new model instance (centralized or distributed)."""
+    if task_rate is None:
+        task_rate = DEFAULT_TASK_ARRIVAL_RATE
     step_dt = STEP_DURATION_S
 
     dsm_instance = None
@@ -53,10 +63,6 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: s
         except Exception:
             dsm_instance = None
 
-    import logging
-    import sys
-    from pathlib import Path
-    
     dashboard_logger = logging.getLogger('WarehouseDashboard')
     if not dashboard_logger.handlers:
         log_dir = Path(__file__).parent.parent / 'results'
@@ -75,6 +81,33 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=0.1, mode: s
         dashboard_logger.addHandler(file_handler)
         dashboard_logger.addHandler(stream_handler)
         dashboard_logger.setLevel(logging.INFO)
+    
+    task_latency = calculate_task_latency(width, height)
+    agent_capacity = calculate_agent_capacity(width, height)
+    system_capacity = n_agents * agent_capacity
+    utilization = task_rate / system_capacity if system_capacity > 0 else 0
+    
+    dashboard_logger.info("=" * 70)
+    dashboard_logger.info(f"WAREHOUSE SIMULATION RUN - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    dashboard_logger.info("=" * 70)
+    dashboard_logger.info(f"Memory Architecture: {mode.upper()}")
+    if mode == 'distributed':
+        dashboard_logger.info(f"  DSM Shards: {num_shards}")
+    dashboard_logger.info(f"Warehouse Dimensions: {width} × {height} = {width * height} cells")
+    dashboard_logger.info(f"Agents: {n_agents}")
+    dashboard_logger.info(f"Step Duration: {step_dt:.3f}s ({int(step_dt * 1000)}ms)")
+    dashboard_logger.info(f"Robot Velocity: {1.0 / step_dt:.2f} cells/sec")
+    dashboard_logger.info(f"Work Duration: {int(TASK_WORK_DURATION_S / step_dt)} steps ({TASK_WORK_DURATION_S}s)")
+    dashboard_logger.info("")
+    dashboard_logger.info("Capacity Analysis (for this warehouse size):")
+    dashboard_logger.info(f"  Avg Task Distance: {(width + height) / 3:.1f} cells")
+    dashboard_logger.info(f"  Typical Task Latency: {task_latency:.1f}s")
+    dashboard_logger.info(f"  Agent Capacity: {agent_capacity:.4f} tasks/sec")
+    dashboard_logger.info(f"  System Capacity ({n_agents} agents): {system_capacity:.4f} tasks/sec")
+    dashboard_logger.info(f"  Task Arrival Rate: {task_rate:.4f} tasks/sec")
+    dashboard_logger.info(f"  Expected Utilization: {utilization:.1%}")
+    dashboard_logger.info("=" * 70)
+    dashboard_logger.info("")
     
     return WarehouseDSMModel(
         n_agents=n_agents,

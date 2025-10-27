@@ -125,18 +125,18 @@ experiments:
       step_interval: 50
       mode: distributed
 
-  # Centralized reference run
-  centralized_baseline:
-    name: "Centralized Baseline"
-    description: "Centralized memory baseline/reference run"
+  # Distributed baseline for comparison
+  distributed_baseline:
+    name: "Distributed Baseline"
+    description: "Distributed memory with same settings as centralized baseline"
     warehouse:
-      size: [18, 12]
+      size: [20, 15]
       storage_regions:
-        - {center: [4, 3], radius: 3}
-        - {center: [14, 9], radius: 3}
+        - {center: [5, 4], radius: 3}
+        - {center: [15, 10], radius: 3}
       sortation_regions:
-        - {center: [9, 1], radius: 1}
-        - {center: [9, 11], radius: 1}
+        - {center: [10, 2], radius: 1}
+        - {center: [10, 12], radius: 1}
     agents:
       count: 8
       initial_positions: "random"
@@ -146,7 +146,32 @@ experiments:
       halo_radius: 2
       aoi_threshold: 1000
     tasks:
-      arrival_rate: 0.4
+      arrival_rate: 0.1
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: distributed
+
+  # Centralized reference run
+  centralized_baseline:
+    name: "Centralized Baseline"
+    description: "Centralized memory baseline/reference run"
+    warehouse:
+      size: [20, 15]
+      storage_regions:
+        - {center: [5, 4], radius: 3}
+        - {center: [15, 10], radius: 3}
+      sortation_regions:
+        - {center: [10, 2], radius: 1}
+        - {center: [10, 12], radius: 1}
+    agents:
+      count: 8
+      initial_positions: "random"
+    aoi_threshold: 1000
+    tasks:
+      arrival_rate: 0.1
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 1, 1]
     simulation:

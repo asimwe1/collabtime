@@ -38,6 +38,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dsm.api import dsm
+from config import LOG_INTERVAL_STEPS, TASK_SPAWN_LOG_INTERVAL_STEPS
 
 
 class WarehouseDSMModel(Model):
@@ -190,7 +191,7 @@ class WarehouseDSMModel(Model):
         # Collect data
         self.datacollector.collect(self)
         
-        if self.step_count % 50 == 0:
+        if self.step_count % LOG_INTERVAL_STEPS == 0:
             active_count = len(self.active_tasks)
             completed_count = len(self.completed_tasks)
             agent_states = {}
@@ -204,7 +205,7 @@ class WarehouseDSMModel(Model):
             for agent in self.schedule.agents:
                 x, y = self.warehouse.node_to_pos(agent.node)
                 state = agent.state.value if hasattr(agent, 'state') else 'unknown'
-                task_str = f"task={agent.current_task_id}" if agent.current_task_id else "no_task"
+                task_str = f"task={agent.current_task_id}" if agent.current_task_id is not None else "no_task"
                 
                 target_str = ""
                 if agent.task_location is not None:
@@ -227,8 +228,8 @@ class WarehouseDSMModel(Model):
         key = tuple(sorted((from_node, to_node)))
         expires = self.edge_reservations.get(key)
         if expires is None or expires <= self.step_count:
-            # Grant reservation (short duration to reduce starvation)
-            self.edge_reservations[key] = self.step_count + max(1, min(2, duration_steps))
+            reserve_duration = max(1, min(duration_steps // 10, duration_steps))
+            self.edge_reservations[key] = self.step_count + reserve_duration
             return True
         return False
     
@@ -238,19 +239,28 @@ class WarehouseDSMModel(Model):
         dt = max(self.step_duration_s, 0.0)
         if lam <= 0 or dt <= 0:
             return
-        # Decrease time to next arrival by this step's duration
+        
+        timer_before = self._time_to_next_arrival_s
         self._time_to_next_arrival_s -= dt
-        # Spawn tasks for each elapsed arrival; guard with a reasonable cap per step
+        
         spawns_this_step = 0
         max_spawns = 1000
         while self._time_to_next_arrival_s <= 0 and spawns_this_step < max_spawns:
-            self._create_random_task()
+            task_created = self._create_random_task()
             spawns_this_step += 1
-            # Account for overshoot by adding the next exponential gap
-            self._time_to_next_arrival_s += random.expovariate(lam)
+            next_exp = random.expovariate(lam)
+            self._time_to_next_arrival_s += next_exp
+            
+            if task_created:
+                self.logger.info(f"Step {self.step_count}: TASK SPAWNED #{self.task_counter}! timer_before={timer_before:.2f}s, next_exp={next_exp:.2f}s, final_timer={self._time_to_next_arrival_s:.2f}s")
+            else:
+                self.logger.warning(f"Step {self.step_count}: TASK SPAWN ATTEMPT FAILED (no available nodes), next_exp={next_exp:.2f}s, final_timer={self._time_to_next_arrival_s:.2f}s")
+        
+        if self.step_count % (TASK_SPAWN_LOG_INTERVAL_STEPS * 10) == 0:
+            self.logger.info(f"Step {self.step_count}: Poisson state - time_to_next: {self._time_to_next_arrival_s:.2f}s, lam={lam}, dt={dt}")
     
-    def _create_random_task(self):
-        """Create a random task at a random location (on any aisle)"""
+    def _create_random_task(self) -> bool:
+        """Create a random task at a random location (on any aisle). Returns True if task was created."""
         pick_pack_nodes = [n for n in range(self.warehouse.width * self.warehouse.height)
                            if self.warehouse.node_types.get(n) in ('pick_location', 'pack_station')]
         candidate_nodes = pick_pack_nodes
@@ -259,19 +269,31 @@ class WarehouseDSMModel(Model):
                                if self.warehouse.node_types.get(n) == 'aisle']
 
         occupied_nodes = set(self.get_warehouse_occupancy().keys())
-        available_nodes = [n for n in candidate_nodes if n not in occupied_nodes]
+        
+        dsm_api = self.dsm if self.dsm is not None else dsm
+        task_locations = set()
+        for task_id, task_info in dsm_api.task_registry.tasks.items():
+            if isinstance(task_info, dict) and task_info.get('status') in ['available', 'claimed']:
+                loc = task_info.get('location')
+                if loc is not None:
+                    task_locations.add(loc)
+        
+        occupied_or_tasked = occupied_nodes | task_locations
+        available_nodes = [n for n in candidate_nodes if n not in occupied_or_tasked]
 
         if not available_nodes:
-            return
+            if self.step_count % (TASK_SPAWN_LOG_INTERVAL_STEPS * 10) == 0:
+                self.logger.warning(f"Step {self.step_count}: TASK SPAWN BLOCKED - no available nodes! "
+                                   f"Candidates: {len(candidate_nodes)}, Occupied: {len(occupied_nodes)}, "
+                                   f"Active tasks: {len(task_locations)}, Pick/pack nodes: {len(pick_pack_nodes)}")
+            return False
 
         if available_nodes:
             location = self.random.choice(available_nodes)
             
-            if self.step_count % 10 == 0:
-                self.logger.info(f"Step {self.step_count}: {len(available_nodes)}/{len(candidate_nodes)} unoccupied locations, spawned at node {location}")
+            if self.step_count % TASK_SPAWN_LOG_INTERVAL_STEPS == 0:
+                self.logger.info(f"Step {self.step_count}: {len(available_nodes)}/{len(candidate_nodes)} locations free (excl agents & tasks), spawned at node {location}")
             
-            # Create task in DSM
-            dsm_api = self.dsm if self.dsm is not None else dsm
             task_id = dsm_api.create_task(location)
             
             sim_time = self.step_count * self.step_duration_s
@@ -283,6 +305,9 @@ class WarehouseDSMModel(Model):
             }
             
             self.task_counter += 1
+            return True
+        
+        return False
     
     def _cleanup_tasks(self):
         """Remove completed tasks from tracking"""
