@@ -33,11 +33,11 @@ import math
 from .graph import WarehouseGraph, create_standard_warehouse
 from .agent import RobotAgent
 
-# Import DSM components
+# Import components
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dsm.api import dsm
+from coord import Coordinator
 from config import LOG_INTERVAL_STEPS, TASK_SPAWN_LOG_INTERVAL_STEPS
 
 
@@ -48,7 +48,7 @@ class WarehouseDSMModel(Model):
                  n_agents: int = None,
                  warehouse_graph: WarehouseGraph = None,
                  agent_positions: List[tuple] = None,
-                 dsm=None,
+                 coordinator=None,
                  task_arrival_rate: float = 0.1,
                  task_types: List[str] = None,
                  task_priorities: List[int] = None,
@@ -56,6 +56,8 @@ class WarehouseDSMModel(Model):
                  warehouse_height: int = 10,
                  seed: int = None,
                  step_duration_s: float = 0.05,
+                 aoi_threshold_ms: int = 1000,
+                 mode: str = 'p2p',
                  logger=None):
         
         super().__init__(seed=seed)
@@ -71,9 +73,11 @@ class WarehouseDSMModel(Model):
         
         # Simulation parameters
         self.num_agents = n_agents if n_agents is not None else 16
+        self.mode = mode
         # Interpret task_arrival_rate as tasks per second
         self.task_arrival_rate = task_arrival_rate  # tasks/sec
         self.step_duration_s = step_duration_s
+        self.aoi_threshold_ms = aoi_threshold_ms
         # Event-driven Poisson arrivals: track time to next arrival (seconds)
         if self.task_arrival_rate > 0:
             self._time_to_next_arrival_s = random.expovariate(self.task_arrival_rate)
@@ -86,9 +90,17 @@ class WarehouseDSMModel(Model):
         
         # Create or accept warehouse graph
         self.warehouse = warehouse_graph or create_standard_warehouse(warehouse_width, warehouse_height)
-
-        # Attach DSM instance if provided
-        self.dsm = dsm if dsm is not None else None
+        
+        # Coordinator (control plane): strong consistency for tasks
+        self.coordinator = coordinator if coordinator is not None else Coordinator()
+        
+        # Central scheduler (centralized mode only)
+        self.central_scheduler = None
+        if self.mode == 'centralized':
+            from central.scheduler import CentralizedScheduler
+            self.central_scheduler = CentralizedScheduler(self.warehouse, logger=self.logger)
+            if self.logger:
+                self.logger.info("Initialized CENTRALIZED mode with central path scheduler (bottleneck)")
         
         # Agent scheduler
         self.schedule = RandomActivation(self)
@@ -174,10 +186,21 @@ class WarehouseDSMModel(Model):
     def step(self):
         """Execute one model step"""
         self.step_count += 1
+        current_time_ms = int(self.step_count * self.step_duration_s * 1000)
+        
+        # Tick coordinator first (expire leases, detect failures)
+        self.coordinator.tick(current_time_ms)
+        
         # Cleanup expired edge reservations
-        expired_keys = [k for k, exp in self.edge_reservations.items() if exp <= self.step_count]
-        for k in expired_keys:
-            self.edge_reservations.pop(k, None)
+        for key, reservations in list(self.edge_reservations.items()):
+            if isinstance(reservations, list):
+                active = [exp for exp in reservations if exp > self.step_count]
+                if active:
+                    self.edge_reservations[key] = active
+                else:
+                    self.edge_reservations.pop(key, None)
+            elif reservations <= self.step_count:
+                self.edge_reservations.pop(key, None)
         
         # Generate new tasks
         self._generate_tasks()
@@ -187,6 +210,20 @@ class WarehouseDSMModel(Model):
         
         # Clean up completed tasks
         self._cleanup_tasks()
+        
+        # Peer-to-peer gossip: merge random agent pairs every 3 steps (150ms default)
+        # ONLY in distributed mode - centralized has no gossip overhead
+        if self.mode != 'centralized' and self.step_count % 3 == 0:
+            self._gossip_round()
+        
+        # Cache cleanup: evict stale entries every 1000 steps to prevent unbounded growth
+        # Only in distributed mode (centralized has no agent caches)
+        if self.mode != 'centralized' and self.step_count % 1000 == 0:
+            max_age_ms = 100 * self.aoi_threshold_ms
+            for agent in self.schedule.agents:
+                if agent.local_cache:
+                    agent.local_cache.cleanup_stale_entries(max_age_ms)
+            self.logger.info(f"Step {self.step_count}: Cleaned up cache entries older than {max_age_ms}ms (100x AoI)")
         
         # Collect data
         self.datacollector.collect(self)
@@ -221,15 +258,47 @@ class WarehouseDSMModel(Model):
             self.running = False
 
     # --- Movement coordination ---
+    def _gossip_round(self):
+        """
+        Peer-to-peer gossip: merge random agent pairs' local caches.
+        
+        This is the key to distributed spatial data propagation.
+        Each agent shares its local view with a random peer.
+        """
+        agents = list(self.schedule.agents)
+        if len(agents) < 2:
+            return
+        
+        self.random.shuffle(agents)
+        
+        for i in range(0, len(agents) - 1, 2):
+            agent_a = agents[i]
+            agent_b = agents[i + 1]
+            
+            if hasattr(agent_a, 'local_cache') and hasattr(agent_b, 'local_cache'):
+                agent_a.local_cache.merge_from(agent_b.local_cache)
+                agent_b.local_cache.merge_from(agent_a.local_cache)
+    
     def try_reserve_edge(self, from_node: int, to_node: int, duration_steps: int) -> bool:
-        """Reserve an edge for duration_steps to prevent head-on collisions.
+        """Reserve an edge lane, allowing multi-agent traversal up to aisle width.
         Returns True if reservation granted, False otherwise.
         """
         key = tuple(sorted((from_node, to_node)))
-        expires = self.edge_reservations.get(key)
-        if expires is None or expires <= self.step_count:
-            reserve_duration = max(1, min(duration_steps // 10, duration_steps))
-            self.edge_reservations[key] = self.step_count + reserve_duration
+        
+        if key not in self.edge_reservations:
+            self.edge_reservations[key] = []
+        
+        current_reservations = self.edge_reservations[key]
+        if not isinstance(current_reservations, list):
+            current_reservations = [current_reservations] if current_reservations > self.step_count else []
+        
+        active_reservations = [exp for exp in current_reservations if exp > self.step_count]
+        
+        max_lanes = 2
+        if len(active_reservations) < max_lanes:
+            reserve_duration = duration_steps
+            active_reservations.append(self.step_count + reserve_duration)
+            self.edge_reservations[key] = active_reservations
             return True
         return False
     
@@ -269,32 +338,23 @@ class WarehouseDSMModel(Model):
                                if self.warehouse.node_types.get(n) == 'aisle']
 
         occupied_nodes = set(self.get_warehouse_occupancy().keys())
-        
-        dsm_api = self.dsm if self.dsm is not None else dsm
-        task_locations = set()
-        for task_id, task_info in dsm_api.task_registry.tasks.items():
-            if isinstance(task_info, dict) and task_info.get('status') in ['available', 'claimed']:
-                loc = task_info.get('location')
-                if loc is not None:
-                    task_locations.add(loc)
-        
-        occupied_or_tasked = occupied_nodes | task_locations
-        available_nodes = [n for n in candidate_nodes if n not in occupied_or_tasked]
+        available_nodes = [n for n in candidate_nodes if n not in occupied_nodes]
 
         if not available_nodes:
             if self.step_count % (TASK_SPAWN_LOG_INTERVAL_STEPS * 10) == 0:
-                self.logger.warning(f"Step {self.step_count}: TASK SPAWN BLOCKED - no available nodes! "
+                self.logger.warning(f"Step {self.step_count}: TASK SPAWN BLOCKED - all pick/pack nodes occupied by agents! "
                                    f"Candidates: {len(candidate_nodes)}, Occupied: {len(occupied_nodes)}, "
-                                   f"Active tasks: {len(task_locations)}, Pick/pack nodes: {len(pick_pack_nodes)}")
+                                   f"Pick/pack nodes: {len(pick_pack_nodes)}")
             return False
 
         if available_nodes:
             location = self.random.choice(available_nodes)
             
             if self.step_count % TASK_SPAWN_LOG_INTERVAL_STEPS == 0:
-                self.logger.info(f"Step {self.step_count}: {len(available_nodes)}/{len(candidate_nodes)} locations free (excl agents & tasks), spawned at node {location}")
+                self.logger.info(f"Step {self.step_count}: {len(available_nodes)}/{len(candidate_nodes)} pick/pack locations free (excluding agent positions), spawned at node {location}")
             
-            task_id = dsm_api.create_task(location)
+            # Use coordinator for task creation (control plane)
+            task_id = self.coordinator.create_task(location)
             
             sim_time = self.step_count * self.step_duration_s
             self.active_tasks[task_id] = {
@@ -314,14 +374,13 @@ class WarehouseDSMModel(Model):
         completed_tasks = []
         
         for task_id, task_info in self.active_tasks.items():
-            # Check if task is completed in DSM
-            dsm_api = self.dsm if self.dsm is not None else dsm
-            task = dsm_api.task_registry.tasks.get(task_id)
-            if task and isinstance(task, dict):
-                # Task is a dict with 'status' key
-                if task.get('status') in ['completed', 'failed', 'expired']:
+            # Check if task is completed in coordinator
+            task = self.coordinator.task_registry.get_task(task_id)
+            if task:
+                status = task.status.value
+                if status in ['completed', 'failed', 'expired']:
                     completed_tasks.append(task_id)
-                    if task.get('status') == 'completed':
+                    if status == 'completed':
                         completion_time = self.step_count * self.step_duration_s
                         task_record = {
                             'task_id': task_id,
@@ -329,7 +388,6 @@ class WarehouseDSMModel(Model):
                             'completion_time': completion_time
                         }
                         self.completed_tasks.append(task_record)
-                        # Record latency if we have creation time
                         created_time = task_info.get('created_time')
                         if created_time:
                             self.completed_latencies.append(completion_time - created_time)

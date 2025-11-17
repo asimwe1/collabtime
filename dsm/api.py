@@ -26,6 +26,7 @@ class DSMLayer:
         window_data = {}
         peak_value = self.default_value
         peak_node = node
+        filtered_count = 0
         
         # Get neighbors within radius (simplified - would use graph traversal)
         neighbors = self._get_neighbors(node, radius)
@@ -46,12 +47,15 @@ class DSMLayer:
                     if value > peak_value:
                         peak_value = value
                         peak_node = neighbor
+                else:
+                    filtered_count += 1
         
         return {
             'window_data': window_data,
             'peak_value': peak_value,
             'peak_node': peak_node,
-            'query_time_ms': current_time
+            'query_time_ms': current_time,
+            'filtered_count': filtered_count
         }
     
     def write_delta(self, deltas: Dict[int, float], source_ts_ms: int):
@@ -127,9 +131,8 @@ class DSM:
         self.halo_radius = halo_radius
         self.aoi_threshold = aoi_threshold
 
-        # Initialize data layers
+        # Initialize data layers (task_signal removed - now in Coordinator)
         self.layers = {
-            'task_signal': DSMLayer('task_signal', self._merge_task_signal),
             'flow_trace': DSMLayer('flow_trace', self._merge_flow_trace),
             'jam_signal': DSMLayer('jam_signal', self._merge_jam_signal)
         }
@@ -151,10 +154,8 @@ class DSM:
             raise ValueError(f"Unknown layer: {layer}")
         result = self.layers[layer].read_window(node, radius, max_aoi_ms)
         self.stats['reads'] += 1
-        # Count AoI violations (entries older than threshold)
-        window = result.get('window_data', {})
-        violations = sum(1 for v in window.values() if v.get('age_ms', 0) > self.aoi_threshold)
-        self.stats['aoi_violations'] += violations
+        
+        self.stats['aoi_violations'] += result.get('filtered_count', 0)
         return result
     
     def write_delta(self, layer: str, deltas: Dict[int, float], source_ts_ms: int) -> None:
@@ -170,25 +171,13 @@ class DSM:
         return self.task_registry.claim(task_id, agent_id)
     
     def create_task(self, location: int) -> int:
-        """Create a new task and seed the signal"""
+        """Create a new task (legacy method - prefer using Coordinator)"""
         task_id = self.task_registry.create_task(location)
-        
-        # Seed task signal at the location
-        current_time = int(time.time() * 1000)
-        self.write_delta('task_signal', {location: 1.0}, current_time)
-        
         return task_id
     
     def complete_task(self, task_id: int) -> bool:
-        """Complete a task and clear signals"""
+        """Complete a task (legacy method - prefer using Coordinator)"""
         if self.task_registry.complete_task(task_id):
-            # Clear task signal (simplified)
-            task = self.task_registry.tasks[task_id]
-            location = task['location']
-            current_time = int(time.time() * 1000)
-            self.write_delta('task_signal', {location: 0.0}, current_time)
-            # Keep task in registry with 'completed' status for metrics tracking
-            # Visualization will filter these out
             return True
         return False
 
@@ -231,11 +220,6 @@ class DSM:
         return 1.0
     
     # Merge functions for different data layers
-    @staticmethod
-    def _merge_task_signal(current: float, delta: float) -> float:
-        """Task signals use maximum (strongest signal wins)"""
-        return max(current, delta)
-    
     @staticmethod
     def _merge_flow_trace(current: float, delta: float) -> float:
         """Flow traces accumulate (positive feedback)"""

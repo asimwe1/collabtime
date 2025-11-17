@@ -1,31 +1,60 @@
-# Warehouse DSM Experiments
+# Warehouse P2P Coordination Experiments
 
-This directory contains experiment configurations and runners for testing the warehouse distributed shared memory system.
+This directory contains experiment configurations and runners for testing the warehouse peer-to-peer distributed coordination system.
+
+## Architecture Overview
+
+The system uses a **hybrid P2P architecture** with two planes:
+
+**Control Plane** (Strong Consistency):
+- Coordinator with TaskRegistry, LeaseManager, WatchManager, MembershipTracker
+- Centralized task claims and leases for safety
+
+**Data Plane** (Eventual Consistency):
+- LocalDSMCache per agent with 4 layers: flow_trace, jam_signal, agent_location, path_intent
+- CRDTs (GCounter, LWWMap) with epidemic gossip protocol
+- Age of Information (AoI) tracking for data freshness
+- Cache eviction every 1000 steps (removes entries older than 100x AoI threshold)
+
+**Movement & Collision Avoidance:**
+- Multi-lane edge reservations: Up to 2 agents can traverse parallel aisle lanes simultaneously
+- Bi-directional aisles: Both vertical and horizontal aisles are 2-wide for parallel flow
+- Head-on collision prevention via sorted edge keys
 
 ## Files
 
 - `configs.yaml` - Experiment configurations with different scenarios
 - `run.py` - Automated experiment runner with data collection and analysis
-- `results/` - Output directory for experiment results (created automatically)
+- `compare.py` - Comparison tool for centralized vs distributed results
+- `fileHandler.py` - Results organization and run tracking
+- `results/` - Output directory with auto-incrementing run directories
 
 ## Experiment Configurations
 
 ### Available Experiments
 
-1. **baseline_small** - Small 10x10 warehouse with 4 agents for validation
-2. **scaling_medium** - Medium 20x15 warehouse with 8 agents for scalability testing  
-3. **stress_high_load** - Large 25x20 warehouse with 12 agents and high task arrival rate
-4. **fault_tolerance** - Tests system resilience with scheduled agent failures
-5. **network_latency** - Tests performance with simulated network delays
+**Scalability Series:**
+1. **baseline_10_agents** - 10 agents, 20x15 warehouse, 0.08 tasks/s (baseline)
+2. **scalability_20_agents** - 20 agents, 25x20 warehouse, 0.15 tasks/s
+3. **scalability_30_agents** - 30 agents, 28x23 warehouse, 0.22 tasks/s
+4. **scalability_40_agents** - 40 agents, 30x24 warehouse, 0.28 tasks/s
+5. **scalability_50_agents** - 50 agents, 30x25 warehouse, 0.35 tasks/s
+6. **scalability_100_agents** - 100 agents, 40x35 warehouse, 0.60 tasks/s
+7. **scalability_300_agents** - 300 agents, 70x60 warehouse, 1.5 tasks/s
+8. **scalability_500_agents** - 500 agents, 95x80 warehouse, 2.5 tasks/s
+
+**Gossip Interval Tests (10 agents, 20x15 warehouse):**
+9. **gossip_fast** - Gossip every step (interval=1), 0.10 tasks/s
+10. **gossip_slow** - Gossip every 10 steps (interval=10), 0.10 tasks/s
 
 ### Configuration Structure
 
 Each experiment defines:
 - Warehouse topology (size, storage/sortation regions)
-- Agent configuration (count, initial positions, failure schedules)
-- DSM parameters (partition strategy, memory owners, halo radius, AoI thresholds)
-- Task generation (arrival rates, types, priorities)
-- Simulation settings (duration, step intervals)
+- Agent configuration (count, initial positions)
+- Coordination parameters (gossip_interval, aoi_threshold, lease_ttl)
+- Task generation (arrival_rate, types, priorities)
+- Simulation settings (duration, step_interval, mode, seed)
 
 ## Running Experiments
 
@@ -33,111 +62,223 @@ Each experiment defines:
 
 ```bash
 # Run all experiments
-python run.py
+./experiments/run.py
 
 # Run specific experiments
-python run.py -e baseline_small scaling_medium
+./experiments/run.py -e baseline_10_agents scalability_20_agents
+
+# Run full scalability series
+./experiments/run.py -e baseline_10_agents scalability_20_agents scalability_30_agents scalability_40_agents scalability_50_agents
 
 # Use custom config file
-python run.py -c my_configs.yaml
+./experiments/run.py -c experiments/configs.yaml
 
 # Set custom output directory
-python run.py -o my_results/
+./experiments/run.py -o my_results/
+
+# Override simulation duration
+./experiments/run.py -d 120
+
+# Control logging interval (steps between progress logs)
+./experiments/run.py --log-interval 100
 
 # Enable verbose logging
-python run.py -v
+./experiments/run.py -v
 ```
 
-### Advanced Options
+### Timing Modes
+
+**LF Mode (Default - REQUIRED for reproducible experiments):**
+```bash
+# Uses Lingua Franca for deterministic logical time
+./experiments/run.py --lf  # This is the default
+
+
+./experiments/run.py -e baseline_10_agents
+```
 
 ```bash
-# Run experiments in parallel (future feature)
-python run.py -p
-
-# Get help
-python run.py --help
+# Why Lingua Franca (LF) Time Is Required
+# ---------------------------------------
+# - Ensures deterministic logical time (reproducibility with fixed seed/config)
+# - Provides consistent step/tick timing on any hardware or OS
+# - Supports federated simulation across nodes
+# - Mandatory for any fair/meaningful experimental comparison
 ```
+
+### Comparing Results
+
+```bash
+# Compare latest centralized vs distributed results
+./experiments/compare.py
+
+# Compare a specific run
+./experiments/compare.py --run run001
+
+# Specify alternative centralized baseline for comparison
+./experiments/compare.py --central-config centralized_baseline
+```
+
 
 ## Output
 
-The experiment runner generates:
-
 ### Results Directory Structure
-```
+
+```bash
 results/
-├── experiment_summary_YYYYMMDD_HHMMSS.csv    # Summary metrics
-├── experiment_details_YYYYMMDD_HHMMSS.json   # Detailed results
-├── task_completion_timeline_YYYYMMDD_HHMMSS.png
-├── performance_comparison_YYYYMMDD_HHMMSS.png
-└── experiments.log                           # Execution logs
+├── runs.json                                 # Global manifest of all runs
+├── run001/
+│   ├── run_metadata.json                     # Run configuration and status
+│   ├── distributed/
+│   │   ├── experiment_summary_YYYYMMDD_HHMMSS.csv
+│   │   ├── experiment_details_YYYYMMDD_HHMMSS.json
+│   │   ├── dashboard_report_<config>_YYYYMMDD_HHMMSS.png
+│   │   ├── system_perf_<config>_YYYYMMDD_HHMMSS.png
+│   │   ├── dashboard_metrics_YYYYMMDD_HHMMSS.csv
+│   │   └── experiments.log
+│   ├── centralized/
+│   │   ├── experiment_summary_YYYYMMDD_HHMMSS.csv
+│   │   ├── experiment_details_YYYYMMDD_HHMMSS.json
+│   │   └── experiments.log
+│   └── comparison_vs_<config>.png            # Generated by compare.py
+├── run002/
+│   └── ...
 ```
+
+Each run directory contains:
+- Separate subdirectories for distributed and centralized modes
+- **Dashboard report** (2×2 grid) showing:
+  - **Task Timeline**: Created, completed, and active tasks over time
+  - **Throughput**: 30-second moving average (tasks/min)
+  - **Latency**: Rolling average of task completion times
+  - **Utilization**: Working vs active agent utilization over time
+- **System performance** (standalone 2×3 grid) showing:
+  - **DSM Cache Entries**: Total cache entries over time (line plot)
+  - **DSM Overhead**: Avg cache size and total gossip rounds (bar chart, high values)
+  - **Coordinator State**: Tasks in registry and active leases (bar chart, low values)
+  - **Area Congestion** (dual-axis plot):
+    - Spread: Number of jammed nodes (how many nodes have congestion signals)
+    - Severity: Average jam intensity per node (0-5 scale, how bad the congestion is)
+  - **Point Contention** (dual-axis plot):
+    - Count: Number of stalled agents (how many agents are blocked)
+    - Duration: Average stall duration in steps (how long agents remain blocked)
+  - **Stall Location Breakdown** (stacked area plot):
+    - In Transit: Agents blocked in aisles during navigation
+    - At Resource: Agents blocked at pickup/drop-off locations
+    - Idle: Agents blocked while idle (anomaly detection)
+- CSV summaries with key metrics
+- Detailed JSON with full time series data
 
 ### Metrics Collected
 
 **Performance Metrics:**
-- Task completion rates and times
-- Agent utilization and total distance traveled
-- System throughput
+- `tasks_completed` - Total tasks successfully completed
+- `tasks_failed` - Tasks that failed or expired
+- `completion_rate` - Ratio of completed to total tasks
+- `average_completion_time` - Mean task latency (seconds)
+- `latency_p50/p90/p99` - Latency percentiles
+- `throughput_tps` - Tasks per second
+- `agent_utilization` - Fraction of time agents spent working
+- `total_distance_traveled` - Cumulative agent movement
 
-**DSM Metrics:**
-- Memory read/write operations
-- Gossip message overhead
-- Age of Information (AoI) violations
-- Partition quality metrics
+**Coordination Metrics:**
+- `avg_cache_size` - Average DSM cache entries per agent
+- `total_gossip_rounds` - Number of gossip exchanges
+- `tasks_in_registry` - Tasks tracked by coordinator
+- `active_leases` - Current task leases held by agents
+- `coordination_mode` - P2P or centralized
 
 **Time Series Data:**
-- Task completion timeline
-- DSM operation rates
-- System resource usage
+- `tasks_created_timeline` - Cumulative tasks created
+- `task_completion_timeline` - Cumulative completions
+- `tasks_active_timeline` - Active tasks over time
+- `cache_entries_timeline` - Total DSM cache entries over time
+- `jam_entries_timeline` - Jam signal entry count (number of jam entries in caches, includes gossip replication)
+- `num_jammed_nodes_timeline` - Number of unique jammed nodes (congestion spread, deduplicated via LWW)
+- `jam_intensity_avg_timeline` - Average jam severity per jammed node (0-5 scale, congestion intensity)
+- `utilization_working_timeline` - Fraction of agents in WORKING state (productive work at task locations)
+- `utilization_active_timeline` - Fraction of agents in WORKING or NAVIGATING state (occupied with tasks)
+- `num_stuck_agents_timeline` - Number of stalled agents (point contention, local blocking)
+- `avg_stuck_counter_timeline` - Average stall duration in steps (how long agents remain blocked)
+- `max_stuck_counter_timeline` - Maximum stall duration in steps (worst case blocking)
+- `stalls_in_transit_timeline` - Agents stalled during navigation in aisles (edge/path contention)
+- `stalls_at_resource_timeline` - Agents stalled at task locations (resource contention at pickup/drop-off)
+- `stalls_idle_timeline` - Agents stalled while idle (anomaly, should be rare)
+- `latency_samples_s` - Per-task completion latencies
 
 ## Example Configuration
 
 ```yaml
-baseline_small:
-  name: "Baseline Small"
+baseline_10_agents:
+  name: "Baseline: 10 Agents"
+  description: "Baseline with 10 agents for validation"
   warehouse:
-    size: [10, 10]
+    size: [20, 15]
     storage_regions:
-      - {center: [2, 2], radius: 2}
+      - {center: [5, 4], radius: 3}
+      - {center: [15, 11], radius: 3}
     sortation_regions:
-      - {center: [5, 1], radius: 1}
+      - {center: [10, 2], radius: 1}
+      - {center: [10, 13], radius: 1}
   agents:
-    count: 4
-    initial_positions: [[1, 1], [8, 8], [1, 8], [8, 1]]
-  dsm:
-    partition_strategy: "spatial"
-    memory_owners: 2
-    halo_radius: 2
-    aoi_threshold: 1000
+    count: 10
+    initial_positions: "random"
+  coordination:
+    gossip_interval: 3          # Gossip every 3 steps
+    aoi_threshold: 1000         # Age of Information threshold (ms)
+    lease_ttl: 30000            # Task lease time-to-live (ms)
   tasks:
-    arrival_rate: 0.2
+    arrival_rate: 0.10          # Tasks per second (~70% utilization)
     types: ["pickup", "delivery", "sort"]
+    priorities: [1, 1, 1]
   simulation:
-    duration: 300
-    step_interval: 50
+    duration: 300               # Simulation duration (5 minutes)
+    step_interval: 50           # Step duration (milliseconds)
+    mode: p2p                   # Coordination mode (p2p or centralized)
+    seed: 42                    # Random seed for reproducibility
 ```
 
 ## Customizing Experiments
 
 1. **Add New Experiments**: Define new configurations in `configs.yaml`
-2. **Modify Metrics**: Update the metrics collection in `run.py`
-3. **Custom Analysis**: Extend the plotting and analysis functions
-4. **Parallel Execution**: Implement multiprocessing for faster execution
+2. **Modify Coordination**: Adjust `gossip_interval`, `aoi_threshold`, `lease_ttl` 
+3. **Tune Capacity**: Change `arrival_rate` to test system under different loads
+4. **Custom Metrics**: Extend metrics collection in `run.py:collect_final_metrics()`
+5. **Custom Plots**: Add plotting functions in `run.py:generate_dashboard_reports()`
+
+## Key Parameters
+
+**gossip_interval**: Steps between gossip rounds (lower = more overhead, fresher data)
+**aoi_threshold**: Maximum acceptable data age in ms (affects AoI violations)
+**arrival_rate**: Tasks/second (compare to system capacity for utilization)
+**step_interval**: Milliseconds per simulation step (50ms = 20 Hz)
+**seed**: Random seed for reproducible experiments
 
 ## Dependencies
 
 The experiment runner requires:
-- PyYAML for configuration parsing
-- pandas for data analysis
-- matplotlib for visualization
-- numpy for numerical operations
-- The warehouse DSM system modules (world/, dsm/, lf/)
+- PyYAML - configuration parsing
+- pandas - data analysis
+- matplotlib - visualization
+- numpy - numerical operations
+- Mesa - agent-based modeling framework
+- The warehouse modules: world/, coord/, dsm/, lf/
 
 ## Integration with Lingua Franca
 
-The experiments use the Mesa simulation framework but can be extended to integrate with Lingua Franca timing coordination:
+The experiments support LF-coordinated timing:
 
-1. **LF Reactor Integration**: Use dsm_coordinator.lf for deterministic timing
-2. **Federated Execution**: Run memory owners and agents as separate federates  
-3. **Real-time Scheduling**: Enable logical time progression with physical time
-4. **Cross-platform Testing**: Test distributed execution across multiple nodes
+```bash
+# Compile the LF coordinator
+cd lf
+lfc coordinator.lf
+
+# Run experiments with LF timing
+./experiments/run.py --lf
+```
+
+**LF Integration Features:**
+- Deterministic logical time progression
+- Network tick coordination via TCP (port 9001)
+- Fallback to internal clock if LF unavailable
+- Supports federated execution across nodes

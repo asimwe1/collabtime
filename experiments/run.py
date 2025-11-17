@@ -26,8 +26,10 @@ from config import (
     STEP_DURATION_S,
     calculate_task_latency,
     calculate_agent_capacity,
-    TASK_WORK_DURATION_S
+    TASK_WORK_DURATION_S,
+    GOSSIP_PERIOD_MS
 )
+from experiments.fileHandler import ResultsManager
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -35,13 +37,7 @@ import numpy as np
 
 from world.model import WarehouseDSMModel
 from world.graph import WarehouseGraph
-from dsm.api import DSM
-try:
-    from dsm.router import DSMRouter, default_region_mapper
-except Exception:
-    DSMRouter = None
-    default_region_mapper = None
-from lf.bridge import LFTickClient, internal_tick_generator
+from lf.bridge import LFTickClient
 
 
 @dataclass
@@ -61,11 +57,11 @@ class ExperimentResult:
 class ExperimentRunner:
     """Orchestrates warehouse DSM experiments with data collection and analysis."""
     
-    def __init__(self, config_path: str, output_dir: str = "results"):
+    def __init__(self, config_path: str, output_dir: str = "results", duration_override: Optional[int] = None):
         """Initialize experiment runner with configuration."""
         self.config_path = Path(config_path)
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.file_handler = ResultsManager(output_dir)
+        self.duration_override = duration_override
         
         # Load experiment configurations
         with open(self.config_path, 'r') as f:
@@ -120,12 +116,19 @@ class ExperimentRunner:
         """Generate initial agent positions."""
         if isinstance(agents_config['initial_positions'], str) and agents_config['initial_positions'] == 'random':
             # Generate random positions
+            valid_nodes = [n for n in warehouse_graph.graph.nodes()
+                          if warehouse_graph.node_types.get(n) in ('staging', 'aisle', 'buffer')
+                          and warehouse_graph.capacities.get(n, 0) > 0
+                          and len(list(warehouse_graph.graph.neighbors(n))) > 0]
+            
+            if not valid_nodes:
+                raise ValueError("No valid starting positions found in warehouse graph!")
+            
             positions = []
-            nodes = list(warehouse_graph.graph.nodes())
             np.random.seed(42)  # For reproducibility
             
             for _ in range(agents_config['count']):
-                pos = nodes[np.random.randint(len(nodes))]
+                pos = valid_nodes[np.random.randint(len(valid_nodes))]
                 positions.append(pos)
             return positions
         else:
@@ -134,10 +137,11 @@ class ExperimentRunner:
     
     def run_single_experiment(self, config_name: str, config: Dict, use_lf: bool = False) -> ExperimentResult:
         """Run a single experiment configuration."""
-        sim_mode = config.get('simulation', {}).get('mode', 'distributed')
+        sim_mode = config.get('simulation', {}).get('mode', 'p2p')
         
-        mode_dir = self.output_dir / ('distributed' if sim_mode == 'distributed' else 'centralized')
-        mode_dir.mkdir(parents=True, exist_ok=True)
+        mode_dir = self.file_handler.get_mode_directory(
+            'distributed' if sim_mode == 'p2p' else 'centralized'
+        )
         
         mode_log_path = mode_dir / 'experiments.log'
         mode_file_handler = logging.FileHandler(mode_log_path)
@@ -156,26 +160,32 @@ class ExperimentRunner:
         task_rate = config['tasks']['arrival_rate']
         duration = config['simulation']['duration']
         step_interval = config['simulation']['step_interval']
+        seed = config.get('simulation', {}).get('seed', None)
+        
+        if self.duration_override is not None:
+            duration = self.duration_override
+            config['simulation']['duration'] = duration
+            self.logger.info(f"Duration overridden to {duration}s via command-line")
         
         task_latency = calculate_task_latency(warehouse_size[0], warehouse_size[1])
         agent_capacity = calculate_agent_capacity(warehouse_size[0], warehouse_size[1])
         system_capacity = num_agents * agent_capacity
         utilization = task_rate / system_capacity if system_capacity > 0 else 0
         
-        aoi_threshold = config.get('aoi_threshold', config.get('dsm', {}).get('aoi_threshold', 1000))
+        gossip_interval = config.get('coordination', {}).get('gossip_interval', 3)
+        aoi_threshold = config.get('coordination', {}).get('aoi_threshold', 1000)
         
-        self.logger.info(f"Memory Architecture: {sim_mode.upper()}")
-        if sim_mode == 'distributed' and 'dsm' in config:
-            num_shards = max(1, int(config['dsm'].get('memory_owners', 1)))
-            self.logger.info(f"  DSM Shards: {num_shards}")
-            self.logger.info(f"  Partition Strategy: {config['dsm'].get('partition_strategy', 'N/A')}")
-            self.logger.info(f"  Halo Radius: {config['dsm'].get('halo_radius', 'N/A')}")
+        self.logger.info(f"Coordination Architecture: P2P (Peer-to-Peer)")
+        self.logger.info(f"  Control Plane: Coordinator (strong consistency)")
+        self.logger.info(f"  Data Plane: Local caches + epidemic gossip")
+        self.logger.info(f"  Gossip Interval: {gossip_interval} steps")
         self.logger.info(f"  AoI Threshold: {aoi_threshold}ms")
         self.logger.info(f"Warehouse Dimensions: {warehouse_size[0]} × {warehouse_size[1]} = {warehouse_size[0] * warehouse_size[1]} cells")
         self.logger.info(f"Agents: {num_agents}")
         self.logger.info(f"Simulation Duration: {duration}s ({int(duration * 1000 / step_interval)} steps)")
         self.logger.info(f"Step Duration: {STEP_DURATION_S:.3f}s ({int(STEP_DURATION_S * 1000)}ms)")
         self.logger.info(f"Timing Mode: {'LF-coordinated' if use_lf else 'Fast-as-possible'}")
+        self.logger.info(f"Random Seed: {seed if seed is not None else 'None (unseeded)'}")
         self.logger.info("")
         self.logger.info("Capacity Analysis (for this warehouse size):")
         self.logger.info(f"  Avg Task Distance: {(warehouse_size[0] + warehouse_size[1]) / 3:.1f} cells")
@@ -191,72 +201,40 @@ class ExperimentRunner:
         
         try:
             warehouse_graph = self.create_warehouse_graph(config['warehouse'])
-            
             agent_positions = self.generate_agent_positions(config['agents'], warehouse_graph)
-            
-            sim_mode = config.get('simulation', {}).get('mode', 'distributed')
-            aoi_threshold = config.get('aoi_threshold', config.get('dsm', {}).get('aoi_threshold', 1000))
-
-            if sim_mode == 'distributed' and 'dsm' in config and DSMRouter is not None and default_region_mapper is not None:
-                dsm_config = config['dsm']
-                num_shards = max(1, int(dsm_config.get('memory_owners', 1)))
-                width = getattr(warehouse_graph, 'width', config['warehouse']['size'][0])
-
-                def node_to_shard(node_id: int, w: int = width, shards: int = num_shards) -> int:
-                    return default_region_mapper(node_id, w, shards)
-
-                def dsm_factory() -> DSM:
-                    return DSM(
-                        memory_owners=dsm_config['memory_owners'],
-                        partition_strategy=dsm_config['partition_strategy'],
-                        halo_radius=dsm_config['halo_radius'],
-                        aoi_threshold=dsm_config.get('aoi_threshold', aoi_threshold)
-                    )
-
-                dsm = DSMRouter(num_shards=num_shards, node_to_shard=node_to_shard, dsm_factory=dsm_factory)
-                self.logger.info(f"Initialized DISTRIBUTED DSM with {num_shards} shards (mode=distributed)")
-            else:
-                dsm = DSM(
-                    memory_owners=1,
-                    partition_strategy='none',
-                    halo_radius=0,
-                    aoi_threshold=aoi_threshold
-                )
-                if sim_mode == 'distributed':
-                    self.logger.info("Requested distributed mode but router unavailable; falling back to CENTRALIZED DSM")
-                else:
-                    self.logger.info("Initialized CENTRALIZED DSM (mode=centralized)")
             
             duration = config['simulation']['duration']
             step_interval = config['simulation']['step_interval']
             step_dt = STEP_DURATION_S
-            steps = int(duration * 1000 / step_interval)  # Convert to steps
+            steps = int(duration * 1000 / step_interval)
+            seed = config.get('simulation', {}).get('seed', None)
             
             model = WarehouseDSMModel(
                 n_agents=config['agents']['count'],
                 warehouse_graph=warehouse_graph,
                 agent_positions=agent_positions,
-                dsm=dsm,
                 task_arrival_rate=config['tasks']['arrival_rate'],
                 task_types=config['tasks']['types'],
                 task_priorities=config['tasks']['priorities'],
                 step_duration_s=step_dt,
+                aoi_threshold_ms=aoi_threshold,
+                mode=sim_mode,
+                seed=seed,
                 logger=self.logger
             )
+            
+            mode_label = "CENTRALIZED (bottleneck)" if sim_mode == 'centralized' else "P2P DISTRIBUTED"
+            self.logger.info(f"Initialized {mode_label} model with {config['agents']['count']} agents")
             
             self.logger.info(f"Running {steps} steps over {duration}s")
             
             metrics_data = []
             
             if use_lf:
-                try:
-                    client = LFTickClient()
-                    client.connect()
-                    tick_iter = client.ticks()
-                    self.logger.info("Connected to LF tick server on 127.0.0.1:9001")
-                except Exception as e:
-                    self.logger.warning(f"LF not available ({e}); using internal tick generator")
-                    tick_iter = internal_tick_generator(step_interval)
+                client = LFTickClient()
+                client.connect()
+                tick_iter = client.ticks()
+                self.logger.info("Connected to LF tick server on 127.0.0.1:9001")
                 
                 current_step = 0
                 for _ in tick_iter:
@@ -328,7 +306,8 @@ class ExperimentRunner:
                 metrics={},
                 logs=[],
                 success=False,
-                error_message=str(e)
+                error_message=str(e),
+                mode=sim_mode
             )
             
             self.logger.error(f"Failed experiment: {config_name} - {e}\n{full_trace}")
@@ -339,17 +318,83 @@ class ExperimentRunner:
     
     def collect_step_metrics(self, model: WarehouseDSMModel, step: int) -> Dict:
         """Collect metrics for a single simulation step."""
+        cache_stats_per_agent = [
+            agent.local_cache.get_stats() if agent.local_cache else {}
+            for agent in model.schedule.agents
+        ]
+        
+        total_cache_entries = sum(
+            stats.get('flow_entries', 0) + stats.get('jam_entries', 0) + 
+            stats.get('agent_locations', 0) + stats.get('path_intents', 0) + 
+            stats.get('resource_states', 0)
+            for stats in cache_stats_per_agent
+        )
+        
+        total_jam_entries = sum(stats.get('jam_entries', 0) for stats in cache_stats_per_agent)
+        
+        # Compute unique jam metrics (avoid double-counting replicated jams via gossip)
+        # In centralized mode, use central scheduler data
+        unique_jams = {}
+        if model.mode == 'centralized' and model.central_scheduler:
+            # Centralized: use central jam data
+            for node_id, jam_value in model.central_scheduler.jam_data.items():
+                unique_jams[node_id] = {'value': jam_value, 'timestamp': step}
+        else:
+            # Distributed: aggregate from agent caches
+            for agent in model.schedule.agents:
+                if agent.local_cache:
+                    for node_id, jam_entry in agent.local_cache.jam_signal.items():
+                        if node_id not in unique_jams or jam_entry['timestamp'] > unique_jams[node_id]['timestamp']:
+                            unique_jams[node_id] = jam_entry
+        
+        num_jammed_nodes = len(unique_jams)
+        avg_jam_intensity = sum(entry['value'] for entry in unique_jams.values()) / num_jammed_nodes if num_jammed_nodes > 0 else 0.0
+        
+        agent_states = [agent.state for agent in model.schedule.agents]
+        working_count = sum(1 for state in agent_states if state.value == 'working')
+        navigating_count = sum(1 for state in agent_states if state.value == 'navigating')
+        utilization_working = working_count / len(agent_states) if agent_states else 0.0
+        utilization_active = (working_count + navigating_count) / len(agent_states) if agent_states else 0.0
+        
+        stuck_counters = [agent.stuck_counter for agent in model.schedule.agents]
+        num_stuck = sum(1 for sc in stuck_counters if sc > 0)
+        avg_stuck = sum(stuck_counters) / len(stuck_counters) if stuck_counters else 0.0
+        max_stuck = max(stuck_counters) if stuck_counters else 0
+        
+        stalls_in_transit = 0
+        stalls_at_resource = 0
+        stalls_idle = 0
+        
+        for agent in model.schedule.agents:
+            if agent.stuck_counter > 0:
+                if agent.state.value == 'navigating':
+                    if agent.task_location is not None and agent.node == agent.task_location:
+                        stalls_at_resource += 1
+                    else:
+                        stalls_in_transit += 1
+                elif agent.state.value == 'idle':
+                    stalls_idle += 1
+        
         return {
             'step': step,
             'timestamp': time.time(),
             'tasks_created': model.task_counter,
             'tasks_completed': len([t for t in model.completed_tasks]),
             'tasks_active': len([t for t in model.active_tasks]),
-            'agent_states': [agent.state for agent in model.schedule.agents],
-            'dsm_reads': model.dsm.stats.get('reads', 0),
-            'dsm_writes': model.dsm.stats.get('writes', 0),
-            'gossip_messages': model.dsm.stats.get('gossip_messages', 0),
-            'aoi_violations': model.dsm.stats.get('aoi_violations', 0)
+            'agent_states': agent_states,
+            'cache_entries': total_cache_entries,
+            'jam_entries': total_jam_entries,
+            'num_jammed_nodes': num_jammed_nodes,
+            'jam_intensity_avg': avg_jam_intensity,
+            'gossip_rounds': step // 3,
+            'utilization_working': utilization_working,
+            'utilization_active': utilization_active,
+            'num_stuck_agents': num_stuck,
+            'avg_stuck_counter': avg_stuck,
+            'max_stuck_counter': max_stuck,
+            'stalls_in_transit': stalls_in_transit,
+            'stalls_at_resource': stalls_at_resource,
+            'stalls_idle': stalls_idle
         }
     
     def collect_final_metrics(self, model: WarehouseDSMModel, step_data: List[Dict], sim_duration_s: float, step_interval_ms: int) -> Dict:
@@ -387,30 +432,50 @@ class ExperimentRunner:
             'agent_utilization': np.mean([agent.utilization for agent in model.schedule.agents])
         }
         
-        # DSM metrics
-        dsm_metrics = {
-            'total_reads': model.dsm.stats.get('reads', 0),
-            'total_writes': model.dsm.stats.get('writes', 0),
-            'total_gossip_messages': model.dsm.stats.get('gossip_messages', 0),
-            'aoi_violations': model.dsm.stats.get('aoi_violations', 0),
-            'partition_quality': model.dsm.get_partition_quality(),
-            'coordination_overhead': model.dsm.stats.get('coordination_time', 0)
+        # Data plane metrics depend on mode
+        if model.mode == 'centralized':
+            # Centralized: report central scheduler data store size
+            avg_cache_size = model.central_scheduler.metrics['congestion_data_size'] if model.central_scheduler else 0
+            total_gossip_rounds = 0
+        else:
+            # Distributed: report per-agent local cache and gossip
+            avg_cache_size = np.mean([
+                sum(agent.local_cache.get_stats().values()) if agent.local_cache else 0
+                for agent in model.schedule.agents
+            ])
+            total_gossip_rounds = df['gossip_rounds'].max() if 'gossip_rounds' in df else 0
+        
+        coordination_metrics = {
+            'avg_cache_size': float(avg_cache_size),
+            'total_gossip_rounds': int(total_gossip_rounds),
+            'tasks_in_registry': len(model.coordinator.task_registry.tasks),
+            'active_leases': len([l for l in model.coordinator.lease_manager.leases.values() if l]),
+            'coordination_mode': model.mode
         }
         
-        # Time series data
         time_series = {
             'tasks_created_timeline': df['tasks_created'].tolist(),
             'task_completion_timeline': df['tasks_completed'].tolist(),
             'tasks_active_timeline': df['tasks_active'].tolist(),
-            'dsm_reads_timeline': df['dsm_reads'].tolist(),
-            'dsm_writes_timeline': df['dsm_writes'].tolist(),
+            'cache_entries_timeline': df.get('cache_entries', []).tolist() if 'cache_entries' in df else [],
+            'jam_entries_timeline': df.get('jam_entries', []).tolist() if 'jam_entries' in df else [],
+            'num_jammed_nodes_timeline': df.get('num_jammed_nodes', []).tolist() if 'num_jammed_nodes' in df else [],
+            'jam_intensity_avg_timeline': df.get('jam_intensity_avg', []).tolist() if 'jam_intensity_avg' in df else [],
+            'utilization_working_timeline': df.get('utilization_working', []).tolist() if 'utilization_working' in df else [],
+            'utilization_active_timeline': df.get('utilization_active', []).tolist() if 'utilization_active' in df else [],
+            'num_stuck_agents_timeline': df.get('num_stuck_agents', []).tolist() if 'num_stuck_agents' in df else [],
+            'avg_stuck_counter_timeline': df.get('avg_stuck_counter', []).tolist() if 'avg_stuck_counter' in df else [],
+            'max_stuck_counter_timeline': df.get('max_stuck_counter', []).tolist() if 'max_stuck_counter' in df else [],
+            'stalls_in_transit_timeline': df.get('stalls_in_transit', []).tolist() if 'stalls_in_transit' in df else [],
+            'stalls_at_resource_timeline': df.get('stalls_at_resource', []).tolist() if 'stalls_at_resource' in df else [],
+            'stalls_idle_timeline': df.get('stalls_idle', []).tolist() if 'stalls_idle' in df else [],
             'steps': df['step'].tolist(),
             'latency_samples_s': latencies_s
         }
         
         return {
             'performance': performance_metrics,
-            'dsm': dsm_metrics,
+            'coordination': coordination_metrics,
             'time_series': time_series
         }
     
@@ -453,8 +518,8 @@ class ExperimentRunner:
         for mode, group in by_mode.items():
             if not group:
                 continue
-            out_dir = self.output_dir / ( 'distributed' if mode == 'distributed' else 'centralized' if mode == 'centralized' else 'misc')
-            out_dir.mkdir(parents=True, exist_ok=True)
+            mode_name = 'distributed' if mode in ['distributed', 'p2p'] else 'centralized' if mode == 'centralized' else 'misc'
+            out_dir = self.file_handler.get_mode_directory(mode_name)
 
             # Save summary CSV
             summary_data = []
@@ -468,7 +533,7 @@ class ExperimentRunner:
                 }
                 if result.success:
                     summary_row.update({f"perf_{k}": v for k, v in result.metrics.get('performance', {}).items()})
-                    summary_row.update({f"dsm_{k}": v for k, v in result.metrics.get('dsm', {}).items()})
+                    summary_row.update({f"coord_{k}": v for k, v in result.metrics.get('coordination', {}).items()})
                 summary_data.append(summary_row)
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_csv(out_dir / f'experiment_summary_{timestamp}.csv', index=False)
@@ -485,18 +550,16 @@ class ExperimentRunner:
 
             # Plots
             if 'plots' in self.output_config:
-                # Temporarily swap output_dir for plotting into subfolder
-                prev = self.output_dir
-                self.output_dir = out_dir
-                try:
-                    self.generate_plots(group, timestamp)
-                    plots = self.output_config.get('plots')
-                    if isinstance(plots, list) and 'dashboard_style' in plots:
-                        self.generate_dashboard_reports(group, timestamp)
-                finally:
-                    self.output_dir = prev
+                self._generate_mode_plots(group, timestamp, out_dir)
     
-    def generate_plots(self, results: List[ExperimentResult], timestamp: str):
+    def _generate_mode_plots(self, results: List[ExperimentResult], timestamp: str, out_dir: Path):
+        """Generate plots for a specific mode in the given output directory."""
+        self.generate_plots(results, timestamp, out_dir)
+        plots = self.output_config.get('plots')
+        if isinstance(plots, list) and 'dashboard_style' in plots:
+            self.generate_dashboard_reports(results, timestamp, out_dir)
+    
+    def generate_plots(self, results: List[ExperimentResult], timestamp: str, out_dir: Path):
         """Generate visualization plots for experiment results."""
         successful_results = [r for r in results if r.success]
         
@@ -504,7 +567,7 @@ class ExperimentRunner:
             self.logger.warning("No successful experiments to plot")
             return
         
-        self.logger.info(f"Plots saved to {self.output_dir}")
+        self.logger.info(f"Plots saved to {out_dir}")
 
     def _calculate_throughput_series(self, completed_timeline: List[int], time_points: List[float], window_s: float = 30.0) -> List[float]:
         """Calculate moving average throughput over time (tasks per second)."""
@@ -565,7 +628,7 @@ class ExperimentRunner:
         
         return latency_series
 
-    def generate_dashboard_reports(self, results: List[ExperimentResult], timestamp: str):
+    def generate_dashboard_reports(self, results: List[ExperimentResult], timestamp: str, out_dir: Path):
         """Generate per-experiment dashboard-style plots and CSV with key metrics."""
         successful = [r for r in results if r.success]
         if not successful:
@@ -629,21 +692,41 @@ class ExperimentRunner:
                 axes[2].text(0.5, 0.5, 'No latency data', ha='center', va='center', transform=axes[2].transAxes)
                 axes[2].set_title('Latency over time')
             
-            # Cumulative Completions (original timeline)
-            if time_points and completed:
-                axes[3].plot(time_points, completed, color='tab:blue', linewidth=2)
-                axes[3].set_title('Cumulative Completions')
+            # Utilization - working and active (busy) agents over time
+            util_working = ts.get('utilization_working_timeline', [])
+            util_active = ts.get('utilization_active_timeline', [])
+            
+            if util_working and util_active and len(util_working) > 0:
+                util_time_points = time_points[:len(util_working)]
+                axes[3].plot(util_time_points, util_working, color='tab:blue', linewidth=2.5, label='Working', alpha=0.9)
+                axes[3].plot(util_time_points, util_active, color='tab:orange', linewidth=2.5, label='Active (Working + Navigating)', alpha=0.9)
+                axes[3].set_title('Agent Utilization over time')
                 axes[3].set_xlabel('Time (s)')
-                axes[3].set_ylabel('Tasks Completed')
+                axes[3].set_ylabel('Utilization (fraction of agents)')
+                axes[3].set_ylim([0, 1.05])
+                axes[3].legend(loc='best')
                 axes[3].grid(True, alpha=0.3)
+                # Debug: print data ranges
+                if util_working:
+                    self.logger.info(f"Utilization plot data - working: min={min(util_working):.3f}, max={max(util_working):.3f}, samples={len(util_working)}")
+                if util_active:
+                    self.logger.info(f"Utilization plot data - active: min={min(util_active):.3f}, max={max(util_active):.3f}, samples={len(util_active)}")
             else:
-                axes[3].text(0.5, 0.5, 'No completion data', ha='center', va='center', transform=axes[3].transAxes)
-                axes[3].set_title('Cumulative Completions')
+                axes[3].text(0.5, 0.5, f'No utilization data (working={len(util_working)}, active={len(util_active)})', 
+                           ha='center', va='center', transform=axes[3].transAxes, fontsize=10)
+                axes[3].set_title('Agent Utilization over time')
+                axes[3].set_xlabel('Time (s)')
+                axes[3].set_ylabel('Utilization (fraction of agents)')
+                axes[3].set_ylim([0, 1.0])
+                axes[3].grid(True, alpha=0.3)
             
             plt.tight_layout()
-            out_png = self.output_dir / f"dashboard_report_{r.config_name}_{timestamp}.png"
+            out_png = out_dir / f"dashboard_report_{r.config_name}_{timestamp}.png"
             plt.savefig(out_png, dpi=200)
             plt.close(fig)
+            
+            # Generate separate system performance plot
+            self._generate_system_perf_plot(r, timestamp, out_dir, time_points, ts)
             
             rows.append({
                 'config_name': r.config_name,
@@ -657,12 +740,203 @@ class ExperimentRunner:
                 'throughput_tps': perf.get('throughput_tps', 0.0),
             })
         df = pd.DataFrame(rows)
-        df.to_csv(self.output_dir / f"dashboard_metrics_{timestamp}.csv", index=False)
+        df.to_csv(out_dir / f"dashboard_metrics_{timestamp}.csv", index=False)
+    
+    def _generate_system_perf_plot(self, result: ExperimentResult, timestamp: str, out_dir: Path, 
+                                    time_points: List[float], ts: Dict):
+        """Generate standalone system performance plot (cache, gossip, contention, etc.)."""
+        cache_entries = ts.get('cache_entries_timeline', [])
+        coord = result.metrics.get('coordination', {})
+        
+        if not cache_entries:
+            return
+        
+        fig, axes = plt.subplots(2, 3, figsize=(20, 10))
+        axes = axes.flatten()
+        
+        # Cache entries over time
+        cache_time_points = time_points[:len(cache_entries)]
+        if cache_entries:
+            axes[0].plot(cache_time_points, cache_entries, color='tab:purple', linewidth=2)
+            axes[0].set_title(f'DSM Cache Entries: {result.config_name}')
+            axes[0].set_xlabel('Time (s)')
+            axes[0].set_ylabel('Total Cache Entries')
+            axes[0].grid(True, alpha=0.3)
+        
+        # High-value coordination metrics (bar chart)
+        high_labels = ['Avg Cache\nSize', 'Total Gossip\nRounds']
+        high_values = [
+            coord.get('avg_cache_size', 0),
+            coord.get('total_gossip_rounds', 0)
+        ]
+        colors_high = ['tab:purple', 'tab:cyan']
+        axes[1].bar(high_labels, high_values, color=colors_high, alpha=0.7)
+        axes[1].set_title('DSM Overhead')
+        axes[1].set_ylabel('Count')
+        axes[1].grid(True, alpha=0.3, axis='y')
+        
+        # Low-value coordination metrics (separate scale)
+        low_labels = ['Tasks in\nRegistry', 'Active\nLeases']
+        low_values = [
+            coord.get('tasks_in_registry', 0),
+            coord.get('active_leases', 0)
+        ]
+        colors_low = ['tab:orange', 'tab:red']
+        axes[2].bar(low_labels, low_values, color=colors_low, alpha=0.7)
+        axes[2].set_title('Coordinator State')
+        axes[2].set_ylabel('Count')
+        axes[2].grid(True, alpha=0.3, axis='y')
+        
+        # Congestion: Number of jammed nodes vs Average jam severity
+        num_jammed_nodes = ts.get('num_jammed_nodes_timeline', [])
+        jam_intensity_avg = ts.get('jam_intensity_avg_timeline', [])
+        
+        if num_jammed_nodes and jam_intensity_avg:
+            contention_time = time_points[:len(num_jammed_nodes)]
+            
+            # Dual-axis: # jammed nodes (spread) vs avg jam severity (intensity)
+            axes[3].plot(contention_time, num_jammed_nodes, color='#1f77b4', linewidth=2.5, label='# Jammed Nodes', alpha=0.9)
+            ax3_twin = axes[3].twinx()
+            ax3_twin.plot(contention_time, jam_intensity_avg, color='#9467bd', linewidth=2.5, label='Avg Jam Severity', alpha=0.9, linestyle='--')
+            
+            axes[3].set_title('Congestion: Spread vs Severity')
+            axes[3].set_xlabel('Time (s)')
+            axes[3].set_ylabel('# Jammed Nodes (spread)', color='#1f77b4')
+            axes[3].tick_params(axis='y', labelcolor='#1f77b4')
+            ax3_twin.set_ylabel('Avg Jam Severity (0-5)', color='#9467bd')
+            ax3_twin.tick_params(axis='y', labelcolor='#9467bd')
+            ax3_twin.set_ylim([0, 5.5])
+            axes[3].grid(True, alpha=0.3)
+            
+            lines1, labels1 = axes[3].get_legend_handles_labels()
+            lines2, labels2 = ax3_twin.get_legend_handles_labels()
+            axes[3].legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=9)
+        else:
+            axes[3].text(0.5, 0.5, f'No congestion data (nodes={len(num_jammed_nodes)}, severity={len(jam_intensity_avg)})', 
+                        ha='center', va='center', transform=axes[3].transAxes, fontsize=10)
+            axes[3].set_title('Congestion: Spread vs Severity')
+        
+        # Point Contention: Number of stalled agents vs avg stall duration
+        num_stuck = ts.get('num_stuck_agents_timeline', [])
+        avg_stuck_counter = ts.get('avg_stuck_counter_timeline', [])
+        
+        if num_stuck and avg_stuck_counter:
+            stall_time = time_points[:len(num_stuck)]
+            
+            axes[4].plot(stall_time, num_stuck, color='#d62728', linewidth=2.5, label='# Stalled Agents', alpha=0.9)
+            ax4_twin = axes[4].twinx()
+            ax4_twin.plot(stall_time, avg_stuck_counter, color='#ff7f0e', linewidth=2.5, label='Avg Stall Duration', alpha=0.9, linestyle='--')
+            
+            axes[4].set_title('Point Contention: Stalled Agents vs Stall Duration')
+            axes[4].set_xlabel('Time (s)')
+            axes[4].set_ylabel('# Stalled Agents (count)', color='#d62728')
+            axes[4].tick_params(axis='y', labelcolor='#d62728')
+            ax4_twin.set_ylabel('Avg Stall Duration (steps)', color='#ff7f0e')
+            ax4_twin.tick_params(axis='y', labelcolor='#ff7f0e')
+            axes[4].grid(True, alpha=0.3)
+            
+            lines1, labels1 = axes[4].get_legend_handles_labels()
+            lines2, labels2 = ax4_twin.get_legend_handles_labels()
+            axes[4].legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=9)
+        else:
+            axes[4].text(0.5, 0.5, f'No point contention data (stuck={len(num_stuck)}, duration={len(avg_stuck_counter)})', 
+                        ha='center', va='center', transform=axes[4].transAxes, fontsize=10)
+            axes[4].set_title('Point Contention: Stalled Agents vs Stall Duration')
+        
+        # Stall Location Breakdown: Where agents are getting stuck
+        stalls_in_transit = ts.get('stalls_in_transit_timeline', [])
+        stalls_at_resource = ts.get('stalls_at_resource_timeline', [])
+        stalls_idle = ts.get('stalls_idle_timeline', [])
+        
+        if stalls_in_transit and stalls_at_resource:
+            stall_loc_time = time_points[:len(stalls_in_transit)]
+            
+            axes[5].stackplot(stall_loc_time,
+                             stalls_in_transit,
+                             stalls_at_resource,
+                             stalls_idle,
+                             labels=['In Transit (Aisle)', 'At Resource (Pickup/Drop)', 'Idle'],
+                             colors=['#8c564b', '#e377c2', '#7f7f7f'],
+                             alpha=0.7)
+            
+            axes[5].set_title('Stall Location Breakdown: Where Agents Get Stuck')
+            axes[5].set_xlabel('Time (s)')
+            axes[5].set_ylabel('# Stalled Agents by Location')
+            axes[5].legend(loc='upper right', fontsize=9)
+            axes[5].grid(True, alpha=0.3)
+        else:
+            axes[5].text(0.5, 0.5, f'No stall location data', 
+                        ha='center', va='center', transform=axes[5].transAxes, fontsize=10)
+            axes[5].set_title('Stall Location Breakdown')
+        
+        plt.tight_layout()
+        out_png = out_dir / f"system_perf_{result.config_name}_{timestamp}.png"
+        plt.savefig(out_png, dpi=200)
+        plt.close(fig)
+    
+    def _extract_config_details(self, experiment_names: List[str]) -> Dict:
+        """Extract configuration details for metadata"""
+        config_details = {}
+        
+        for exp_name in experiment_names:
+            if exp_name not in self.experiments:
+                continue
+            
+            config = self.experiments[exp_name]
+            
+            warehouse_size = config.get('warehouse', {}).get('size', [0, 0])
+            simulation_config = config.get('simulation', {})
+            agents_config = config.get('agents', {})
+            tasks_config = config.get('tasks', {})
+            dsm_config = config.get('dsm', {})
+            
+            aoi_threshold = config.get('aoi_threshold', dsm_config.get('aoi_threshold', 1000))
+            
+            config_details[exp_name] = {
+                'warehouse': {
+                    'dimensions': warehouse_size,
+                    'total_cells': warehouse_size[0] * warehouse_size[1] if len(warehouse_size) == 2 else 0,
+                    'storage_regions': len(config.get('warehouse', {}).get('storage_regions', [])),
+                    'sortation_regions': len(config.get('warehouse', {}).get('sortation_regions', []))
+                },
+                'agents': {
+                    'count': agents_config.get('count', 0),
+                    'initial_positions': agents_config.get('initial_positions', 'unknown')
+                },
+                'simulation': {
+                    'mode': simulation_config.get('mode', 'distributed'),
+                    'duration_s': simulation_config.get('duration', 0),
+                    'step_interval_ms': simulation_config.get('step_interval', 50),
+                    'total_steps': int(simulation_config.get('duration', 0) * 1000 / simulation_config.get('step_interval', 50)),
+                    'seed': simulation_config.get('seed')
+                },
+                'tasks': {
+                    'arrival_rate': tasks_config.get('arrival_rate', 0),
+                    'types': tasks_config.get('types', []),
+                    'priorities': tasks_config.get('priorities', [])
+                },
+                'coordination': {
+                    'gossip_interval': coord_config.get('gossip_interval', 3),
+                    'aoi_threshold_ms': coord_config.get('aoi_threshold', 1000),
+                    'lease_ttl_ms': coord_config.get('lease_ttl', 30000)
+                } if (coord_config := config.get('coordination', {})) else None
+            }
+        
+        return config_details
     
     def run_experiments(self, experiment_names: Optional[List[str]] = None, use_lf: bool = False) -> List[ExperimentResult]:
         """Run specified experiments or all if none specified."""
         if experiment_names is None:
             experiment_names = list(self.experiments.keys())
+        
+        config_details = self._extract_config_details(experiment_names)
+        
+        run_dir = self.file_handler.create_run_directory(
+            description=f"Baseline comparison: {', '.join(experiment_names)}",
+            config_names=experiment_names,
+            config_details=config_details
+        )
+        self.logger.info(f"Created run directory: {run_dir}")
         
         results = []
         
@@ -675,8 +949,8 @@ class ExperimentRunner:
             result = self.run_single_experiment(exp_name, config, use_lf=use_lf)
             results.append(result)
         
-        # Save all results
         self.save_results(results)
+        self.file_handler.mark_run_complete()
         
         return results
 
@@ -735,12 +1009,14 @@ def main():
                        help='Enable verbose logging')
     lf_group = parser.add_mutually_exclusive_group()
     lf_group.add_argument('--lf', dest='lf', action='store_true', default=True,
-                        help='Drive simulation steps from Lingua Franca tick events (default)')
+                        help='Drive simulation steps from Lingua Franca tick events (default, required for determinism)')
     lf_group.add_argument('--no-lf', dest='lf', action='store_false',
-                        help='Use internal clock (no Lingua Franca)')
+                        help='Use internal clock - WARNING: NOT DETERMINISTIC, for testing only')
     
     parser.add_argument('--log-interval', type=int, default=None,
                        help='Progress log interval in steps (default: 100). Use 0 to disable.')
+    parser.add_argument('--duration', '-d', type=int, default=None,
+                       help='Override simulation duration in seconds')
     args = parser.parse_args()
     
     # Set logging level
@@ -752,11 +1028,16 @@ def main():
     if args.lf:
         lf_proc = start_lf_coordinator()
         if lf_proc is None:
-            print("LF coordinator unavailable; falling back to internal clock.")
-            args.lf = False
+            print("\nERROR: LF coordinator required but unavailable.")
+            print("Experiments require Lingua Franca for deterministic, reproducible results.")
+            print("Please compile the LF coordinator:")
+            print(f"  cd {Path(__file__).parent.parent / 'lf'}")
+            print("  lfc coordinator.lf")
+            print("\nOr use --no-lf for non-deterministic testing (NOT recommended for experiments).")
+            sys.exit(1)
     
     # Initialize runner
-    runner = ExperimentRunner(args.config, args.output)
+    runner = ExperimentRunner(args.config, args.output, duration_override=args.duration)
     if args.log_interval is not None:
         runner.log_interval_steps = max(0, int(args.log_interval))
     

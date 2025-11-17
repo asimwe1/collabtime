@@ -88,4 +88,4 @@ pnpm-debug.log*
 # Misc data files
 *.sqlite
 *.db
-
+notes/myls_template/__MACOSX/

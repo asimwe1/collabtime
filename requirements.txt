@@ -23,6 +23,7 @@ toml                       # TOML configuration support
 scipy                      # Scientific computing
 scikit-learn               # Machine learning algorithms (for clustering)
 sortedcontainers           # Efficient sorted data structures
+pycrdt>=0.8.0              # Conflict-free Replicated Data Types for P2P DSM
 
 
 # Lingua Franca integration

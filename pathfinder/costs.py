@@ -20,7 +20,7 @@ def compute_edge_cost(
     
     Args:
         warehouse: WarehouseGraph instance
-        dsm_api: DSM instance (or router)
+        dsm_api: LocalDSMCache or DSM instance
         from_node: Source node
         to_node: Destination node
         base_cost: Base traversal cost (default 1.0)
@@ -31,22 +31,22 @@ def compute_edge_cost(
     Returns:
         Dynamic cost: base_cost + α × jam + β × flow
     """
-    # Start with base traversal cost
     cost = base_cost
     
     if dsm_api is None:
         return cost
     
     try:
-        # Query jam signal at destination node
-        jam_result = dsm_api.read_window('jam_signal', to_node, radius=0, max_aoi_ms=max_aoi_ms)
-        jam_value = jam_result.get('peak_value', 0.0)
+        if hasattr(dsm_api, 'read_jam'):
+            jam_value = dsm_api.read_jam(to_node, max_aoi_ms)
+            flow_value = dsm_api.read_flow(to_node, max_aoi_ms)
+        else:
+            jam_result = dsm_api.read_window('jam_signal', to_node, radius=0, max_aoi_ms=max_aoi_ms)
+            jam_value = jam_result.get('peak_value', 0.0)
+            
+            flow_result = dsm_api.read_window('flow_trace', to_node, radius=0, max_aoi_ms=max_aoi_ms)
+            flow_value = flow_result.get('peak_value', 0.0)
         
-        # Query flow trace at destination node
-        flow_result = dsm_api.read_window('flow_trace', to_node, radius=0, max_aoi_ms=max_aoi_ms)
-        flow_value = flow_result.get('peak_value', 0.0)
-        
-        # Apply penalties
         cost += alpha * jam_value
         cost += beta * flow_value
         

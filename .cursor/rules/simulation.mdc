@@ -5,8 +5,11 @@ alwaysApply: true
 ## Warehouse Simulation – Engineering Rules
 
 ### Purpose
-- Goal: Compare stigmergy-like distributed shared memory (DSM) vs centralized memory for multi-robot task execution in a warehouse.
+- Goal: Compare P2P distributed shared memory (DSM) + Coordination vs centralized memory for multi-robot task execution in a warehouse.
 - Outcome: Quantify scalability, efficiency, and coordination overhead under varying load and topology.
+
+### Docs
+- DO NOT KEEP making multiple summary md files. Just update a single one concisely. All markdown and docs go to the docs folder. AGAIN and keep making many docs or summaries.
 
 ### Coding
 - Avoid inline comments. File header comments are just enough. 
@@ -28,9 +31,10 @@ alwaysApply: true
 - Utilization: utilization = working_steps / total_steps.
 
 ### Shared Memory Designs
-- Distributed (stigmergy):
-  - Layers: task_signal, flow_trace, jam_signal; timestamped writes; read_window returns window + peak.
-  - Partitioning pluggable (spatial, spectral, …); halo_radius governs boundary exchange.
+- Distributed (P2P):
+  - Control Plane: Coordinator (TaskRegistry, LeaseManager, WatchManager, MembershipTracker)
+  - Data Plane: LocalDSMCache per agent with 4 layers (flow_trace, jam_signal, agent_location, path_intent)
+  - CRDTs: GCounter, LWWMap; gossip every 3 steps
   - Metrics: reads, writes, gossip_messages, aoi_violations, coordination_time, partition_quality.
 - Centralized:
   - Single authority with same API surface; model/agents unchanged.
@@ -61,6 +65,7 @@ alwaysApply: true
 - Freshness: AoI violations below threshold for effective stigmergy.
 
 ### Code Organization Rules
+- coord/: Coordinator components
 - world/: model, agents, graph; no UI/I/O.
 - dsm/: memory API + strategies; no agent policy.
 - pathfinder/: routing and costs; pure functions using API reads.
@@ -83,5 +88,4 @@ alwaysApply: true
 
 ### Glossary
 - AoI: Age of Information (ms).
-- Halo: Border region shared across partitions.
-- Partition Quality: Heuristic for cut size/communication vs balance.
+- CRDT, Gossip, JIT Locking

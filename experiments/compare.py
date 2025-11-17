@@ -6,6 +6,7 @@ Generates side-by-side plots similar to dashboard reports.
 
 import json
 import sys
+import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import STEP_DURATION_S
+from experiments.fileHandler import ResultsManager
 
 
 def find_latest_experiment(results_dir: Path) -> Optional[Path]:
@@ -25,13 +27,26 @@ def find_latest_experiment(results_dir: Path) -> Optional[Path]:
     return max(json_files, key=lambda p: p.stat().st_mtime)
 
 
-def load_experiment_data(json_path: Path) -> Optional[Dict]:
-    """Load experiment data from JSON file."""
+def load_experiment_data(json_path: Path, config_name: str = None) -> Optional[Dict]:
+    """Load experiment data from JSON file. If config_name provided, find that specific config."""
     with open(json_path, 'r') as f:
         data = json.load(f)
     if not data.get('results') or len(data['results']) == 0:
         return None
+    
+    if config_name:
+        for result in data['results']:
+            if result.get('config_name') == config_name:
+                return result
+        return None
     return data['results'][0]
+
+
+def load_all_experiments(json_path: Path) -> List[Dict]:
+    """Load all experiment results from JSON file."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    return data.get('results', [])
 
 
 def calculate_throughput_series(completed_timeline: List[int], time_points: List[float], window_s: float = 30.0) -> List[float]:
@@ -96,7 +111,7 @@ def calculate_latency_series(latency_samples: List[float], completed_timeline: L
 
 
 def generate_comparison_plot(central_data: Dict, dist_data: Dict, output_path: Path):
-    """Generate side-by-side comparison plots."""
+    """Generate side-by-side comparison plot for centralized vs one distributed config."""
     fig, axes = plt.subplots(2, 2, figsize=(20, 12))
     axes = axes.flatten()
     
@@ -180,50 +195,115 @@ def generate_comparison_plot(central_data: Dict, dist_data: Dict, output_path: P
     print(f"Comparison plot saved to: {output_path}")
 
 
-def print_summary_stats(central_data: Dict, dist_data: Dict):
-    """Print summary statistics for both experiments."""
-    print("\n" + "=" * 70)
+def print_summary_stats(central_data: Dict, dist_data_list: List[Dict]):
+    """Print summary statistics comparing centralized with all distributed configs."""
+    if not central_data or not dist_data_list:
+        print("\nERROR: Missing data for comparison")
+        return
+    
+    central_metrics = central_data.get('metrics', {})
+    central_perf = central_metrics.get('performance', {})
+    central_dsm = central_metrics.get('dsm', {})
+    central_ts = central_metrics.get('time_series', {})
+    
+    central_created = central_ts.get('tasks_created_timeline', [])[-1] if central_ts.get('tasks_created_timeline') else central_perf.get('tasks_completed', 0) + central_perf.get('tasks_failed', 0)
+    
+    print("\n" + "=" * 120)
     print("EXPERIMENT COMPARISON SUMMARY")
-    print("=" * 70)
+    print("=" * 120)
     
-    for label, data in [("CENTRALIZED", central_data), ("DISTRIBUTED", dist_data)]:
-        if not data:
-            print(f"\n{label}: No data available")
-            continue
-            
-        metrics = data.get('metrics', {})
-        perf = metrics.get('performance', {})
-        dsm = metrics.get('dsm', {})
-        ts = metrics.get('time_series', {})
-        
-        tasks_created = ts.get('tasks_created_timeline', [])[-1] if ts.get('tasks_created_timeline') else perf.get('tasks_completed', 0) + perf.get('tasks_failed', 0)
-        
-        print(f"\n{label} BASELINE:")
-        print(f"  Tasks Created:       {tasks_created}")
-        print(f"  Tasks Completed:     {perf.get('tasks_completed', 0)}")
-        print(f"  Tasks Failed:        {perf.get('tasks_failed', 0)}")
-        print(f"  Completion Rate:     {perf.get('completion_rate', 0):.2%}")
-        print(f"  Avg Latency:         {perf.get('average_completion_time', 0):.1f}s")
-        print(f"  P50 Latency:         {perf.get('latency_p50', 0):.1f}s")
-        print(f"  P90 Latency:         {perf.get('latency_p90', 0):.1f}s")
-        print(f"  P99 Latency:         {perf.get('latency_p99', 0):.1f}s")
-        print(f"  Throughput:          {perf.get('throughput_tps', 0) * 60:.2f} tasks/min")
-        print(f"  Agent Utilization:   {perf.get('agent_utilization', 0):.2%}")
-        print(f"  Total Distance:      {perf.get('total_distance_traveled', 0):.0f} cells")
-        print(f"  DSM Reads:           {dsm.get('total_reads', 0)}")
-        print(f"  DSM Writes:          {dsm.get('total_writes', 0)}")
-        print(f"  AoI Violations:      {dsm.get('aoi_violations', 0)}")
+    col_width = 18
+    header = f"{'Metric':<30} {'Centralized':>{col_width}}"
+    for dist_data in dist_data_list:
+        config_name = dist_data.get('config_name', 'Unknown')
+        short_name = config_name.replace('distributed_', '')[:col_width]
+        header += f" {short_name:>{col_width}}"
+    print(header)
+    print("-" * 120)
     
-    print("\n" + "=" * 70)
+    def format_multi_row(name, central_val, dist_vals, fmt='{}', compute_diff=True):
+        c_str = fmt.format(central_val)
+        row = f"{name:<30} {c_str:>{col_width}}"
+        for dist_val in dist_vals:
+            d_str = fmt.format(dist_val)
+            if compute_diff and isinstance(central_val, (int, float)) and isinstance(dist_val, (int, float)):
+                if central_val != 0:
+                    diff_pct = ((dist_val - central_val) / central_val) * 100
+                    d_str += f" ({diff_pct:+.0f}%)"
+            row += f" {d_str:>{col_width}}"
+        print(row)
+    
+    tasks_created = [dist_data.get('metrics', {}).get('time_series', {}).get('tasks_created_timeline', [])[-1] 
+                     if dist_data.get('metrics', {}).get('time_series', {}).get('tasks_created_timeline') 
+                     else dist_data.get('metrics', {}).get('performance', {}).get('tasks_completed', 0) + 
+                          dist_data.get('metrics', {}).get('performance', {}).get('tasks_failed', 0)
+                     for dist_data in dist_data_list]
+    
+    tasks_completed = [dist_data.get('metrics', {}).get('performance', {}).get('tasks_completed', 0) for dist_data in dist_data_list]
+    tasks_failed = [dist_data.get('metrics', {}).get('performance', {}).get('tasks_failed', 0) for dist_data in dist_data_list]
+    completion_rate = [dist_data.get('metrics', {}).get('performance', {}).get('completion_rate', 0) for dist_data in dist_data_list]
+    
+    format_multi_row("Tasks Created", central_created, tasks_created, '{:,}')
+    format_multi_row("Tasks Completed", central_perf.get('tasks_completed', 0), tasks_completed, '{:,}')
+    format_multi_row("Tasks Failed", central_perf.get('tasks_failed', 0), tasks_failed, '{:,}')
+    format_multi_row("Completion Rate", central_perf.get('completion_rate', 0), completion_rate, '{:.1%}', compute_diff=False)
+    
+    print("-" * 120)
+    avg_latency = [dist_data.get('metrics', {}).get('performance', {}).get('average_completion_time', 0) for dist_data in dist_data_list]
+    p50_latency = [dist_data.get('metrics', {}).get('performance', {}).get('latency_p50', 0) for dist_data in dist_data_list]
+    p90_latency = [dist_data.get('metrics', {}).get('performance', {}).get('latency_p90', 0) for dist_data in dist_data_list]
+    
+    format_multi_row("Avg Latency (s)", central_perf.get('average_completion_time', 0), avg_latency, '{:.1f}')
+    format_multi_row("P50 Latency (s)", central_perf.get('latency_p50', 0), p50_latency, '{:.1f}')
+    format_multi_row("P90 Latency (s)", central_perf.get('latency_p90', 0), p90_latency, '{:.1f}')
+    
+    print("-" * 120)
+    central_throughput = central_perf.get('throughput_tps', 0) * 60
+    throughput = [dist_data.get('metrics', {}).get('performance', {}).get('throughput_tps', 0) * 60 for dist_data in dist_data_list]
+    utilization = [dist_data.get('metrics', {}).get('performance', {}).get('agent_utilization', 0) for dist_data in dist_data_list]
+    distance = [dist_data.get('metrics', {}).get('performance', {}).get('total_distance_traveled', 0) for dist_data in dist_data_list]
+    
+    format_multi_row("Throughput (tasks/min)", central_throughput, throughput, '{:.2f}')
+    format_multi_row("Agent Utilization", central_perf.get('agent_utilization', 0), utilization, '{:.1%}', compute_diff=False)
+    format_multi_row("Distance (cells)", central_perf.get('total_distance_traveled', 0), distance, '{:,.0f}')
+    
+    print("-" * 120)
+    dsm_reads = [dist_data.get('metrics', {}).get('dsm', {}).get('total_reads', 0) for dist_data in dist_data_list]
+    dsm_writes = [dist_data.get('metrics', {}).get('dsm', {}).get('total_writes', 0) for dist_data in dist_data_list]
+    aoi_violations = [dist_data.get('metrics', {}).get('dsm', {}).get('aoi_violations', 0) for dist_data in dist_data_list]
+    
+    format_multi_row("DSM Reads", central_dsm.get('total_reads', 0), dsm_reads, '{:,}')
+    format_multi_row("DSM Writes", central_dsm.get('total_writes', 0), dsm_writes, '{:,}')
+    format_multi_row("AoI Violations", central_dsm.get('aoi_violations', 0), aoi_violations, '{:,}')
+    
+    print("=" * 120)
 
 
 def main():
     """Main entry point."""
-    results_dir = Path(__file__).parent.parent / 'results'
-    central_dir = results_dir / 'centralized'
-    dist_dir = results_dir / 'distributed'
+    parser = argparse.ArgumentParser(description='Compare centralized vs distributed baseline experiments')
+    parser.add_argument('--run', '-r', type=str, help='Specific run ID to compare (e.g., run001). Default: latest')
+    parser.add_argument('--output', '-o', type=str, default='results', help='Results base directory')
+    parser.add_argument('--central-config', '-c', type=str, default='centralized_baseline', 
+                        help='Centralized config name to use as baseline (default: centralized_baseline)')
+    args = parser.parse_args()
     
-    print("Searching for latest experiment results...")
+    file_handler = ResultsManager(args.output)
+    
+    print("Searching for experiment results...")
+    central_dir, dist_dir = file_handler.find_comparison_pair(args.run)
+    
+    if not central_dir or not dist_dir:
+        print(f"Error: Could not find both centralized and distributed results for run: {args.run or 'latest'}")
+        print("\nAvailable runs:")
+        for run in file_handler.list_runs():
+            print(f"  {run['run_id']}: {run.get('description', 'No description')} - {run.get('status', 'unknown')}")
+        return
+    
+    print(f"Comparing: {central_dir.parent.name}")
+    print(f"  Centralized: {central_dir}")
+    print(f"  Distributed: {dist_dir}")
+    
     central_json = find_latest_experiment(central_dir)
     dist_json = find_latest_experiment(dist_dir)
     
@@ -237,19 +317,30 @@ def main():
     print(f"Loading centralized: {central_json.name}")
     print(f"Loading distributed: {dist_json.name}")
     
-    central_data = load_experiment_data(central_json)
-    dist_data = load_experiment_data(dist_json)
+    central_data = load_experiment_data(central_json, args.central_config)
+    dist_data_list = load_all_experiments(dist_json)
     
-    if not central_data or not dist_data:
-        print("ERROR: Failed to load experiment data")
+    if not central_data:
+        print(f"ERROR: Centralized config '{args.central_config}' not found in {central_json.name}")
+        sys.exit(1)
+    if not dist_data_list:
+        print(f"ERROR: No distributed experiments found in {dist_json.name}")
         sys.exit(1)
     
-    print_summary_stats(central_data, dist_data)
+    print(f"\nFound {len(dist_data_list)} distributed config(s):")
+    for dist_data in dist_data_list:
+        print(f"  - {dist_data.get('config_name', 'Unknown')}")
     
-    output_path = results_dir / 'baseline_comparison.png'
-    generate_comparison_plot(central_data, dist_data, output_path)
+    print_summary_stats(central_data, dist_data_list)
     
-    print(f"\nComparison complete!")
+    run_dir = central_dir.parent
+    for dist_data in dist_data_list:
+        config_name = dist_data.get('config_name', 'unknown')
+        short_name = config_name.replace('distributed_', '')
+        output_path = run_dir / f'comparison_vs_{short_name}.png'
+        generate_comparison_plot(central_data, dist_data, output_path)
+    
+    print(f"\nComparison complete! Generated {len(dist_data_list)} plot(s).")
 
 
 if __name__ == '__main__':

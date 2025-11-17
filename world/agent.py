@@ -16,14 +16,16 @@ from enum import Enum
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dsm.api import dsm
 from pathfinder import astar_with_congestion
+from dsm.local_cache import LocalDSMCache
 from config import (
     TASK_WORK_DURATION_STEPS,
     MOVEMENT_DURATION_STEPS,
     LATERAL_MOVE_DURATION_STEPS,
     STUCK_TIMEOUT_STEPS,
-    REPLAN_ATTEMPTS
+    REPLAN_ATTEMPTS,
+    LOCALITY_PREFERENCE_FACTOR,
+    MAX_AOI_MS
 )
 
 
@@ -59,6 +61,13 @@ class RobotAgent(mesa.Agent):
         # Search parameters
         self.search_radius = 15  # How far to look for tasks (Manhattan distance)
         
+        # Track recently failed tasks to avoid immediate reclaim
+        self.failed_tasks_cooldown: Dict[int, int] = {}  
+        self.failed_task_cooldown_duration = 300 
+        
+        # Peer-to-peer DSM: local cache (only in distributed mode)
+        self.local_cache = LocalDSMCache(unique_id) if model.mode != 'centralized' else None
+        
         # Performance tracking
         self.metrics = {
             'tasks_completed': 0,
@@ -72,16 +81,30 @@ class RobotAgent(mesa.Agent):
         self.steps_total = 0
         self.steps_working = 0
     
+    
     def step(self):
         """Execute one simulation step"""
         self.steps_total += 1
-        if self.state != AgentState.IDLE:
+        if self.state == AgentState.WORKING:
             self.steps_working += 1
+        self.utilization = self.steps_working / max(1, self.steps_total)
         
-        if self.steps_total > 0:
-            self.utilization = self.steps_working / self.steps_total
+        # Write own location to local cache (for others to see via gossip)
+        # Only in distributed mode
+        if self.local_cache:
+            current_time_ms = int(time.time() * 1000)
+            self.local_cache.write_agent_location(self.unique_id, self.node, current_time_ms)
         
-        self._validate_state()
+        # Decrement cooldowns for failed tasks
+        expired_tasks = []
+        for task_id, cooldown in list(self.failed_tasks_cooldown.items()):
+            cooldown -= 1
+            if cooldown <= 0:
+                expired_tasks.append(task_id)
+            else:
+                self.failed_tasks_cooldown[task_id] = cooldown
+        for task_id in expired_tasks:
+            del self.failed_tasks_cooldown[task_id]
         
         if self.state == AgentState.IDLE:
             self._handle_idle()
@@ -102,13 +125,23 @@ class RobotAgent(mesa.Agent):
             self.model.logger.error(f"Agent {self.unique_id}: INCONSISTENT STATE - IDLE but has task {self.current_task_id} at step {self.steps_total}")
     
     def _handle_idle(self):
-        """Look for nearby unclaimed tasks and claim one"""
-        dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
+        """Event-driven: Watch for tasks and react to notifications"""
+        coordinator = self.model.coordinator
+        
+        if not hasattr(self, 'watch_handle') or self.watch_handle is None:
+            self.watch_handle = coordinator.watch(
+                region_id=self.node,
+                event_type='task_created',
+                callback=self._on_task_available
+            )
+            self._on_task_available({'trigger': 'initial_scan'})
+            return
         
         unclaimed_tasks = []
-        for task_id, task_info in dsm_api.task_registry.tasks.items():
-            if isinstance(task_info, dict) and task_info.get('status') == 'available':
-                unclaimed_tasks.append((task_id, task_info))
+        available_tasks = coordinator.get_available_tasks()
+        for task in available_tasks:
+            if task.task_id not in self.failed_tasks_cooldown:
+                unclaimed_tasks.append((task.task_id, {'location': task.location, 'status': 'available'}))
         
         if not unclaimed_tasks:
             self._idle_wander_to_staging()
@@ -136,6 +169,15 @@ class RobotAgent(mesa.Agent):
             
             distance = self._calculate_distance(self.node, task_location)
             
+            if hasattr(self.model.dsm, 'node_to_shard') if hasattr(self.model, 'dsm') else False:
+                agent_shard = self.model.dsm.node_to_shard(self.node)
+                task_shard = self.model.dsm.node_to_shard(task_location)
+                if agent_shard == task_shard:
+                    original_distance = distance
+                    distance = distance * LOCALITY_PREFERENCE_FACTOR
+                    if self.steps_total == 200:
+                        self.model.logger.debug(f"Agent {self.unique_id}: LOCAL task {task_id} - distance {original_distance:.1f} → {distance:.1f} (shard {agent_shard})")
+            
             if distance <= self.search_radius:
                 nearby_tasks.append((task_id, task_location, distance))
             else:
@@ -151,18 +193,23 @@ class RobotAgent(mesa.Agent):
             best_task = (candidates[0][0], candidates[0][1])
         
         if best_task:
-            # Try multiple candidates this tick to avoid idle stalls when claims race
             attempts = 0
             attempted_ids = set()
             while attempts < 3 and best_task:
                 task_id, task_location = best_task
                 attempted_ids.add(task_id)
-                # Try to claim the task
-                if dsm_api.claim(task_id, self.unique_id):
+                
+                claim_success = coordinator.try_claim(task_id, self.unique_id, ttl_ms=300000)
+                
+                if claim_success:
                     self.model.logger.info(f"Agent {self.unique_id}: CLAIMED task {task_id} at location {task_location}")
                     self.current_task_id = task_id
                     self.task_location = task_location
                     self.metrics['tasks_claimed'] += 1
+                    
+                    if hasattr(self, 'watch_handle') and self.watch_handle:
+                        coordinator.unwatch(self.watch_handle)
+                        self.watch_handle = None
                     
                     if self.node == task_location:
                         self.model.logger.info(f"Agent {self.unique_id}: IDLE->WORKING (claimed task {task_id} already at location {task_location})")
@@ -178,15 +225,14 @@ class RobotAgent(mesa.Agent):
                     else:
                         self._fail_current_task()
                     return
+                
                 attempts += 1
-                # try the next best remaining candidate with some randomization
                 remaining = [c for c in candidates if c[0] not in attempted_ids]
                 if remaining:
                     remaining.sort(key=lambda x: (x[2], self.model.random.random()))
                     best_task = (remaining[0][0], remaining[0][1])
                 else:
                     best_task = None
-            # If nothing could be claimed, wander
             self._idle_wander_to_staging()
         else:
             # No visible tasks after evaluation — gentle wander
@@ -200,22 +246,29 @@ class RobotAgent(mesa.Agent):
             return
         
         if self.node == self.task_location:
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            task = dsm_api.task_registry.tasks.get(self.current_task_id)
+            coordinator = self.model.coordinator
             
-            if not task or not isinstance(task, dict):
+            task = coordinator.task_registry.get_task(self.current_task_id)
+            if not task or task.status.value != 'claimed' or task.agent_id != self.unique_id:
                 self._fail_current_task()
                 return
             
-            if task.get('status') != 'claimed' or task.get('agent_id') != self.unique_id:
-                self._fail_current_task()
-                return
+            node_resource_id = f"node_{self.task_location}"
+            lock_success = coordinator.acquire_lock(node_resource_id, self.unique_id, ttl_ms=30000)
             
-            self.model.logger.info(f"Agent {self.unique_id}: NAVIGATING->WORKING (arrived at task {self.current_task_id} location {self.task_location})")
-            self.state = AgentState.WORKING
-            self.work_timer = self.work_duration
-            self.stuck_counter = 0
-            self.path = []
+            if lock_success:
+                self.model.logger.info(f"Agent {self.unique_id}: NAVIGATING->WORKING (arrived at task {self.current_task_id}, acquired node lock)")
+                self.state = AgentState.WORKING
+                self.work_timer = self.work_duration
+                self.stuck_counter = 0
+                self.path = []
+            else:
+                if not hasattr(self, 'resource_wait_timer'):
+                    self.resource_wait_timer = 50
+                self.resource_wait_timer -= 1
+                if self.resource_wait_timer <= 0:
+                    self.model.logger.warning(f"Agent {self.unique_id}: Resource lock timeout for node {self.task_location}")
+                    self._fail_current_task()
             return
         
         # Check if path is exhausted (but we haven't arrived yet)
@@ -275,9 +328,14 @@ class RobotAgent(mesa.Agent):
             return
         
         if self.work_timer <= 0:
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            self.model.logger.info(f"Agent {self.unique_id}: COMPLETED task {self.current_task_id} at location {self.task_location}")
-            dsm_api.complete_task(self.current_task_id)
+            coordinator = self.model.coordinator
+            
+            node_resource_id = f"node_{self.task_location}"
+            coordinator.release_lock(node_resource_id, self.unique_id)
+            
+            coordinator.complete_task(self.current_task_id, self.unique_id)
+            self.model.logger.info(f"Agent {self.unique_id}: COMPLETED task {self.current_task_id}, released node lock")
+            
             self.metrics['tasks_completed'] += 1
             
             self.current_task_id = None
@@ -285,6 +343,9 @@ class RobotAgent(mesa.Agent):
             self.path = []
             self.stuck_counter = 0
             self.work_timer = 0
+            
+            if hasattr(self, 'resource_wait_timer'):
+                delattr(self, 'resource_wait_timer')
             
             occupancy = self.model.get_warehouse_occupancy()
             if occupancy.get(self.node, 0) > 1:
@@ -301,10 +362,13 @@ class RobotAgent(mesa.Agent):
         if not self.model.warehouse.is_adjacent(self.node, node):
             return False
         
-        # Check capacity
-        agents_at_node = sum(1 for agent in self.model.schedule.agents 
-                           if hasattr(agent, 'node') and agent.node == node)
+        # Centralized: trust the scheduler, always allow
+        if self.model.mode == 'centralized':
+            capacity = self.model.warehouse.get_node_capacity(node)
+            return capacity > 0
         
+        # Distributed: check capacity using cached agent locations (may be stale!)
+        agents_at_node = self.local_cache.read_agents_at_node(node, max_aoi_ms=MAX_AOI_MS)
         capacity = self.model.warehouse.get_node_capacity(node)
         return agents_at_node < capacity
     
@@ -317,34 +381,98 @@ class RobotAgent(mesa.Agent):
             return float('inf')
     
     def _plan_path(self, from_node: int, to_node: int) -> List[int]:
-        """Plan shortest path between two nodes using DSM congestion awareness"""
+        """
+        Plan shortest path between two nodes.
+        
+        DISTRIBUTED (P2P): Smart agent plans own path using local stale data
+        CENTRALIZED: Dumb worker asks central scheduler (BOTTLENECK)
+        """
+        if self.model.mode == 'centralized':
+            return self._plan_path_centralized(from_node, to_node)
+        else:
+            return self._plan_path_distributed(from_node, to_node)
+    
+    def _plan_path_centralized(self, from_node: int, to_node: int) -> List[int]:
+        """
+        CENTRALIZED MODE: Request path from central scheduler.
+        
+        This is the BOTTLENECK - all agents serialize here.
+        Agent becomes a dumb worker that just follows orders.
+        """
         try:
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            path = astar_with_congestion(
-                warehouse=self.model.warehouse,
-                dsm_api=dsm_api,
+            self.model.central_scheduler.update_agent_position(self.unique_id, from_node)
+            
+            path = self.model.central_scheduler.request_path(
+                agent_id=self.unique_id,
                 start=from_node,
                 goal=to_node,
-                cost_params={'alpha': 2.0, 'beta': 0.5, 'max_aoi_ms': 5000}
+                current_step=self.model.step_count
             )
+            
             return path if path else []
-        except:
+            
+        except Exception as e:
+            self.model.logger.error(f"Agent {self.unique_id}: Central scheduler EXCEPTION from {from_node} to {to_node}: {e}")
+            return []
+    
+    def _plan_path_distributed(self, from_node: int, to_node: int) -> List[int]:
+        """
+        DISTRIBUTED MODE: Smart agent plans own path using local stale data.
+        
+        Uses local cache with gossip - eventual consistency.
+        """
+        try:
+            path = astar_with_congestion(
+                warehouse=self.model.warehouse,
+                dsm_api=self.local_cache,
+                start=from_node,
+                goal=to_node,
+                cost_params={'alpha': 2.0, 'beta': 0.5, 'max_aoi_ms': MAX_AOI_MS}
+            )
+            if not path:
+                self.model.logger.error(f"Agent {self.unique_id}: A* returned empty path from {from_node} to {to_node}")
+                return []
+            
+            current_time_ms = int(time.time() * 1000)
+            estimated_time_per_step = int(self.model.step_duration_s * MOVEMENT_DURATION_STEPS * 1000)
+            
+            for i, node in enumerate(path):
+                arrival_time = current_time_ms + (i * estimated_time_per_step)
+                self.local_cache.write_path_intent(
+                    agent_id=self.unique_id,
+                    node_id=node,
+                    arrival_time_ms=arrival_time,
+                    duration_ms=estimated_time_per_step,
+                    timestamp_ms=current_time_ms
+                )
+            
+            return path
+        except Exception as e:
+            self.model.logger.error(f"Agent {self.unique_id}: Path planning EXCEPTION from {from_node} to {to_node}: {e}")
             return []
     
     def _fail_current_task(self):
         """Fail the current task and clean up"""
         if self.current_task_id is not None:
             self.model.logger.info(f"Agent {self.unique_id}: FAILED task {self.current_task_id} - releasing back to available")
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            task = dsm_api.task_registry.tasks.get(self.current_task_id)
-            if task and isinstance(task, dict) and task.get('status') == 'claimed' and task.get('agent_id') == self.unique_id:
-                task['status'] = 'available'
-                task['agent_id'] = None
+            
+            coordinator = self.model.coordinator
+            
+            coordinator.release_claim(self.current_task_id, self.unique_id)
+            
+            if self.task_location:
+                node_resource_id = f"node_{self.task_location}"
+                coordinator.release_lock(node_resource_id, self.unique_id)
+            
+            self.failed_tasks_cooldown[self.current_task_id] = self.failed_task_cooldown_duration
             
             self.metrics['tasks_failed'] += 1
             self.current_task_id = None
             self.task_location = None
             self.path = []
+            
+            if hasattr(self, 'resource_wait_timer'):
+                delattr(self, 'resource_wait_timer')
         
         self.state = AgentState.IDLE
         self.stuck_counter = 0
@@ -357,25 +485,38 @@ class RobotAgent(mesa.Agent):
             return True
     
     def _write_flow_trace(self, from_node: int, to_node: int):
-        """Write flow trace to DSM to signal agent movement for congestion tracking."""
-        try:
-            import time
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            current_time_ms = int(time.time() * 1000)
-            dsm_api.write_delta('flow_trace', {to_node: 1.0}, current_time_ms)
-        except Exception:
-            pass
+        """Write flow trace for congestion tracking"""
+        if self.model.mode == 'centralized':
+            # Report to central scheduler (perfect, instant)
+            try:
+                self.model.central_scheduler.report_flow(to_node, 1.0)
+            except Exception:
+                pass
+        elif self.local_cache:
+            # Distributed: write to local cache (eventual consistency via gossip)
+            try:
+                current_time_ms = int(time.time() * 1000)
+                self.local_cache.write_flow(to_node, 1.0, current_time_ms)
+            except Exception:
+                pass
     
     def _write_jam_signal(self):
-        """Write jam signal to DSM when agent is stuck."""
-        try:
-            import time
-            dsm_api = self.model.dsm if hasattr(self.model, 'dsm') and self.model.dsm is not None else dsm
-            current_time_ms = int(time.time() * 1000)
-            jam_value = min(5.0, self.stuck_counter / 50.0)
-            dsm_api.write_delta('jam_signal', {self.node: jam_value}, current_time_ms)
-        except Exception:
-            pass
+        """Write jam signal when stuck"""
+        jam_value = min(5.0, self.stuck_counter / 50.0)
+        
+        if self.model.mode == 'centralized':
+            # Report to central scheduler (perfect, instant)
+            try:
+                self.model.central_scheduler.report_jam(self.node, jam_value)
+            except Exception:
+                pass
+        elif self.local_cache:
+            # Distributed: write to local cache (eventual consistency via gossip)
+            try:
+                current_time_ms = int(time.time() * 1000)
+                self.local_cache.write_jam(self.node, jam_value, current_time_ms)
+            except Exception:
+                pass
     
     def _try_lateral_escape(self) -> bool:
         """Try a one-step lateral move to de-queue if blocked.
@@ -415,6 +556,13 @@ class RobotAgent(mesa.Agent):
             return False
         except Exception:
             return False
+    
+    def _on_task_available(self, event_data):
+        """Callback: React to task_created event from WatchManager"""
+        if self.state != AgentState.IDLE:
+            return
+        
+        self._handle_idle()
     
     def _idle_wander_to_staging(self):
         """Non-blocking idle behavior: drift to a random perimeter staging node."""

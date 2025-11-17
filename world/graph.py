@@ -8,39 +8,110 @@ Supports different warehouse topologies and pathfinding.
 import networkx as nx
 from typing import Dict, List, Tuple, Set, Optional
 import random
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+from config import (calculate_pick_pack_locations, 
+                    VERTICAL_AISLE_WIDTH, HORIZONTAL_AISLE_WIDTH,
+                    MIDDLE_SEPARATOR_WIDTH,
+                    SHELF_BLOCK_WIDTH, SHELF_BLOCK_HEIGHT,
+                    PERIMETER_DEPTH, BUFFER_DEPTH,
+                    STAGING_CAPACITY, AISLE_CAPACITY, SHELF_CAPACITY, WORK_STATION_CAPACITY,
+                    DEFAULT_WAREHOUSE_WIDTH, DEFAULT_WAREHOUSE_HEIGHT)
 
 
 class WarehouseGraph:
-    """Manages the warehouse floor layout as a graph"""
+    """Manages the warehouse floor layout as a graph
     
-    def __init__(self, width: int = 20, height: int = 10):
+    Layout Structure (all configurable in config.py):
+    - Perimeter: staging area (depth=PERIMETER_DEPTH)
+    - Buffer: main circulation aisles (depth=BUFFER_DEPTH)
+    - Interior: alternating shelf blocks and aisles
+      * Vertical aisles (width=VERTICAL_AISLE_WIDTH): main traffic corridors
+      * Horizontal aisles (width=HORIZONTAL_AISLE_WIDTH): access to shelves
+      * Shelf blocks (SHELF_BLOCK_WIDTH x SHELF_BLOCK_HEIGHT)
+    - Middle: separator dividing storage/sortation (width=MIDDLE_SEPARATOR_WIDTH)
+    """
+    
+    def __init__(self, width: int = DEFAULT_WAREHOUSE_WIDTH, 
+                 height: int = DEFAULT_WAREHOUSE_HEIGHT, 
+                 vertical_aisle_width: int = VERTICAL_AISLE_WIDTH,
+                 horizontal_aisle_width: int = HORIZONTAL_AISLE_WIDTH,
+                 middle_separator_width: int = MIDDLE_SEPARATOR_WIDTH,
+                 shelf_block_width: int = SHELF_BLOCK_WIDTH, 
+                 shelf_block_height: int = SHELF_BLOCK_HEIGHT,
+                 perimeter_depth: int = PERIMETER_DEPTH,
+                 buffer_depth: int = BUFFER_DEPTH):
         self.width = width
         self.height = height
+        self.vertical_aisle_width = vertical_aisle_width
+        self.horizontal_aisle_width = horizontal_aisle_width
+        self.middle_separator_width = middle_separator_width
+        self.shelf_block_width = shelf_block_width
+        self.shelf_block_height = shelf_block_height
+        self.perimeter_depth = perimeter_depth
+        self.buffer_depth = buffer_depth
+        
         self.graph = nx.Graph()
-        self.regions = {}  # region_name -> set of nodes
-        self.node_types = {}  # node_id -> type (storage, sortation, transit)
-        self.capacities = {}  # node_id -> max_agents
-        self.costs = {}  # (node1, node2) -> movement_cost
+        self.regions = {}
+        self.node_types = {}
+        self.capacities = {}
+        self.costs = {}
         
         self._build_warehouse()
     
     def _build_warehouse(self):
-        """Build realistic warehouse with perimeter staging, aisle buffers, and wide separator"""
-        # Perimeter staging (all 4 walls)
-        is_perimeter = lambda x, y: (x == 0 or x == self.width-1 or y == 0 or y == self.height-1)
+        """Build realistic warehouse with configurable aisle pattern"""
+        # Perimeter staging
+        perimeter_edge = self.perimeter_depth - 1
+        is_perimeter = lambda x, y: (x <= perimeter_edge or x >= self.width - self.perimeter_depth or 
+                                     y <= perimeter_edge or y >= self.height - self.perimeter_depth)
         
-        # Aisle buffer layer (1 cell inside staging)
-        is_buffer = lambda x, y: (x == 1 or x == self.width-2 or y == 1 or y == self.height-2)
+        # Aisle buffer layer (inside perimeter)
+        buffer_inner = self.perimeter_depth
+        buffer_outer_x = self.width - self.perimeter_depth - 1
+        buffer_outer_y = self.height - self.perimeter_depth - 1
+        is_buffer = lambda x, y: (x == buffer_inner or x == buffer_outer_x or 
+                                  y == buffer_inner or y == buffer_outer_y)
         
-        # Calculate middle separator (2 cells wide for clear division)
-        middle_left = self.width // 2 - 1
-        middle_right = self.width // 2
+        # Middle separator (divides storage/sortation)
+        middle_center = self.width // 2
+        middle_start = middle_center - (self.middle_separator_width // 2)
+        middle_end = middle_start + self.middle_separator_width
         
-        # Vertical aisles (inside buffer zone)
-        aisle_columns = {5, 9, middle_left, middle_right, 11, 15}
+        # Calculate vertical aisle columns (main traffic corridors)
+        aisle_columns = set()
+        start_x = self.perimeter_depth + self.buffer_depth
+        pattern_size = self.shelf_block_width + self.vertical_aisle_width
+        x = start_x + self.shelf_block_width
+        while x < middle_start - 1:
+            for offset in range(self.vertical_aisle_width):
+                if x + offset < middle_start:
+                    aisle_columns.add(x + offset)
+            x += pattern_size
         
-        # Horizontal aisles (inside buffer zone)
-        aisle_rows = {5, 9}
+        # middle separator
+        for col in range(middle_start, middle_end):
+            aisle_columns.add(col)
+        
+        # Continue pattern in sortation region
+        x = middle_end + self.shelf_block_width
+        while x < self.width - self.perimeter_depth - self.buffer_depth:
+            for offset in range(self.vertical_aisle_width):
+                if x + offset < self.width - self.perimeter_depth - self.buffer_depth:
+                    aisle_columns.add(x + offset)
+            x += pattern_size
+        
+        # horizontal aisle rows
+        aisle_rows = set()
+        start_y = self.perimeter_depth + self.buffer_depth
+        y = start_y + self.shelf_block_height
+        while y < self.height - self.perimeter_depth - self.buffer_depth:
+            for offset in range(self.horizontal_aisle_width):
+                if y + offset < self.height - self.perimeter_depth - self.buffer_depth:
+                    aisle_rows.add(y + offset)
+            y += self.shelf_block_height + self.horizontal_aisle_width
         
         # Create all nodes
         for y in range(self.height):
@@ -51,17 +122,16 @@ class WarehouseGraph:
                 # Determine node type (priority order matters)
                 if is_perimeter(x, y):
                     self.node_types[node_id] = 'staging'
-                    self.capacities[node_id] = 1  # One agent per cell
+                    self.capacities[node_id] = STAGING_CAPACITY
                 elif is_buffer(x, y):
                     self.node_types[node_id] = 'aisle'
-                    self.capacities[node_id] = 1  # One agent per cell
+                    self.capacities[node_id] = AISLE_CAPACITY
                 elif x in aisle_columns or y in aisle_rows:
                     self.node_types[node_id] = 'aisle'
-                    self.capacities[node_id] = 1  # One agent per cell
+                    self.capacities[node_id] = AISLE_CAPACITY
                 else:
-                    # Shelf nodes are NOT traversable
                     self.node_types[node_id] = 'shelf'
-                    self.capacities[node_id] = 0
+                    self.capacities[node_id] = SHELF_CAPACITY
         
         # Add edges ONLY between aisle/staging nodes
         for y in range(self.height):
@@ -116,23 +186,42 @@ class WarehouseGraph:
     
     def _add_special_nodes(self):
         """Add special-purpose nodes like docks, charging stations"""
-        storage_nodes = [n for n in self.regions['storage'] 
-                        if self.node_types.get(n) == 'aisle']
+        num_pick, num_pack = calculate_pick_pack_locations(self.width, self.height)
+        
+        # exclude  middle passway from pick/pack locations
+        middle_center = self.width // 2
+        middle_start = middle_center - (self.middle_separator_width // 2)
+        middle_end = middle_start + self.middle_separator_width
+        
+        # Filter out middle passway from storage aisles
+        storage_nodes = []
+        for n in self.regions['storage']:
+            if self.node_types.get(n) == 'aisle':
+                x, y = self.node_to_pos(n)
+                if x < middle_start or x >= middle_end:
+                    storage_nodes.append(n)
+        
         if storage_nodes:
-            pick_locations = random.sample(storage_nodes, min(6, len(storage_nodes)))
+            pick_locations = random.sample(storage_nodes, min(num_pick, len(storage_nodes)))
             
             for node in pick_locations:
                 self.node_types[node] = 'pick_location'
-                self.capacities[node] = 1
+                self.capacities[node] = WORK_STATION_CAPACITY
         
-        sortation_nodes = [n for n in self.regions['sortation'] 
-                          if self.node_types.get(n) == 'aisle']
+        # Filter out middle passway from sortation aisles
+        sortation_nodes = []
+        for n in self.regions['sortation']:
+            if self.node_types.get(n) == 'aisle':
+                x, y = self.node_to_pos(n)
+                if x < middle_start or x >= middle_end:
+                    sortation_nodes.append(n)
+        
         if sortation_nodes:
-            pack_stations = random.sample(sortation_nodes, min(5, len(sortation_nodes)))
+            pack_stations = random.sample(sortation_nodes, min(num_pack, len(sortation_nodes)))
             
             for node in pack_stations:
                 self.node_types[node] = 'pack_station'
-                self.capacities[node] = 1  # Only one agent at pack station
+                self.capacities[node] = WORK_STATION_CAPACITY
 
     # --- Convenience mutators used by experiment configs ---
     def node_id_from_pos(self, pos: Tuple[int, int]) -> int:
@@ -337,40 +426,6 @@ class WarehouseGraph:
 def create_standard_warehouse(width: int = 20, height: int = 10) -> WarehouseGraph:
     """Create a standard warehouse layout"""
     return WarehouseGraph(width, height)
-
-
-def create_complex_warehouse() -> WarehouseGraph:
-    """Create a more complex warehouse with obstacles and special features"""
-    warehouse = WarehouseGraph(width=25, height=15)
-    
-    # Add some obstacles (remove nodes and edges)
-    obstacles = [
-        # Central pillar
-        (12, 7), (12, 8), (13, 7), (13, 8),
-        # Storage racks (create aisles)
-        (3, 3), (3, 4), (3, 5),
-        (7, 3), (7, 4), (7, 5),
-        (11, 3), (11, 4), (11, 5),
-    ]
-    
-    for x, y in obstacles:
-        if 0 <= x < warehouse.width and 0 <= y < warehouse.height:
-            node_id = y * warehouse.width + x
-            if warehouse.graph.has_node(node_id):
-                warehouse.graph.remove_node(node_id)
-                warehouse.node_types.pop(node_id, None)
-                warehouse.capacities.pop(node_id, None)
-    
-    # Add charging stations
-    charging_stations = [(1, 1), (23, 1), (1, 13), (23, 13)]
-    for x, y in charging_stations:
-        if 0 <= x < warehouse.width and 0 <= y < warehouse.height:
-            node_id = y * warehouse.width + x
-            if warehouse.graph.has_node(node_id):
-                warehouse.node_types[node_id] = 'charging_station'
-                warehouse.capacities[node_id] = 3
-    
-    return warehouse
 
 
 if __name__ == "__main__":

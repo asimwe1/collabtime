@@ -1,211 +1,430 @@
-# Warehouse DSM Experiment Configurations
-# Parameterized experiments for testing distributed shared memory system
+# Warehouse P2P Coordination Experiment Configurations
+# Experiments for testing peer-to-peer distributed coordination system
 
 experiments:
-  # Small scale test
-  baseline_small:
-    name: "Baseline Small"
-    description: "Small warehouse with basic settings for validation"
-    warehouse:
-      size: [10, 10]  # 10x10 grid
-      storage_regions:
-        - {center: [2, 2], radius: 2}
-        - {center: [7, 7], radius: 2}
-      sortation_regions:
-        - {center: [5, 1], radius: 1}
-        - {center: [5, 8], radius: 1}
-    agents:
-      count: 4
-      initial_positions: [[1, 1], [8, 8], [1, 8], [8, 1]]
-    dsm:
-      partition_strategy: "spatial"
-      memory_owners: 4
-      halo_radius: 2
-      aoi_threshold: 1000   # ms (1 second)
-    tasks:
-      arrival_rate: 0.2      # tasks per second
-      types: ["pickup", "delivery", "sort"]
-      priorities: [1, 2, 1]  # weights for task type generation
-    simulation:
-      duration: 300          # 10 minutes
-      step_interval: 50      # ms per step
-      mode: distributed      # distributed|centralized
-
-  # Medium scale test  
-  scaling_medium:
-    name: "Medium Scale"
-    description: "Medium warehouse testing scalability"
+  baseline_10_agents:
+    name: "Baseline: 10 Agents"
+    description: "Baseline with 10 agents for validation"
     warehouse:
       size: [20, 15]
       storage_regions:
-        - {center: [5, 3], radius: 3}
-        - {center: [15, 3], radius: 3}
-        - {center: [5, 11], radius: 3}
+        - {center: [5, 4], radius: 3}
         - {center: [15, 11], radius: 3}
       sortation_regions:
-        - {center: [10, 2], radius: 2}
-        - {center: [10, 12], radius: 2}
+        - {center: [10, 2], radius: 1}
+        - {center: [10, 13], radius: 1}
     agents:
-      count: 8
-      initial_positions: "random"  # auto-generate
-    dsm:
-      partition_strategy: "spectral"
-      memory_owners: 4
-      halo_radius: 3
-      aoi_threshold: 800
+      count: 10
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
     tasks:
-      arrival_rate: 0.5
-      types: ["pickup", "delivery", "sort", "maintenance"]
-      priorities: [2, 3, 2, 1]
+      arrival_rate: 0.10
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
     simulation:
-      duration: 300  # 10 minutes
+      duration: 300
       step_interval: 50
-      mode: distributed
+      mode: p2p
+      seed: 42
 
-  # High load stress test
-  stress_high_load:
-    name: "High Load Stress Test"
-    description: "High task arrival rate with many agents"
+  scalability_20_agents:
+    name: "Scalability: 20 Agents"
+    description: "Scalability test with 20 agents"
     warehouse:
       size: [25, 20]
       storage_regions:
         - {center: [6, 5], radius: 4}
-        - {center: [19, 5], radius: 4}
-        - {center: [6, 15], radius: 4}
         - {center: [19, 15], radius: 4}
       sortation_regions:
         - {center: [12, 3], radius: 2}
         - {center: [12, 17], radius: 2}
     agents:
-      count: 12
+      count: 20
       initial_positions: "random"
-    dsm:
-      partition_strategy: "spatial"
-      memory_owners: 6
-      halo_radius: 2
-      aoi_threshold: 500    # stricter freshness
-    tasks:
-      arrival_rate: 1.2     # high task rate
-      types: ["pickup", "delivery", "sort"]
-      priorities: [1, 1, 1]
-    simulation:
-      duration: 900  # 15 minutes
-      step_interval: 50
-      mode: distributed
-
-  # Fault tolerance test
-  fault_tolerance:
-    name: "Fault Tolerance"
-    description: "Test system resilience with agent failures"
-    warehouse:
-      size: [15, 15]
-      storage_regions:
-        - {center: [4, 4], radius: 3}
-        - {center: [11, 11], radius: 3}
-      sortation_regions:
-        - {center: [7, 2], radius: 1}
-        - {center: [7, 13], radius: 1}
-    agents:
-      count: 6
-      initial_positions: "random"
-      failure_schedule:  # agents to fail at specific times
-        - {agent_id: 2, time: 180, duration: 60}   # agent 2 fails at 3min for 1min
-        - {agent_id: 4, time: 300, duration: 120}  # agent 4 fails at 5min for 2min
-    dsm:
-      partition_strategy: "spectral"
-      memory_owners: 4
-      halo_radius: 3
-      aoi_threshold: 1200   # more tolerance during failures
-    tasks:
-      arrival_rate: 0.4
-      types: ["pickup", "delivery", "sort"]
-      priorities: [1, 1, 1]
-    simulation:
-      duration: 300
-      step_interval: 50
-      mode: distributed
-
-  # Distributed baseline for comparison
-  distributed_baseline:
-    name: "Distributed Baseline"
-    description: "Distributed memory with same settings as centralized baseline"
-    warehouse:
-      size: [20, 15]
-      storage_regions:
-        - {center: [5, 4], radius: 3}
-        - {center: [15, 10], radius: 3}
-      sortation_regions:
-        - {center: [10, 2], radius: 1}
-        - {center: [10, 12], radius: 1}
-    agents:
-      count: 8
-      initial_positions: "random"
-    dsm:
-      partition_strategy: "spatial"
-      memory_owners: 4
-      halo_radius: 2
+    coordination:
+      gossip_interval: 3
       aoi_threshold: 1000
+      lease_ttl: 30000
     tasks:
-      arrival_rate: 0.1
+      arrival_rate: 0.20
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 1, 1]
     simulation:
       duration: 300
       step_interval: 50
-      mode: distributed
+      mode: p2p
+      seed: 42
 
-  # Centralized reference run
-  centralized_baseline:
-    name: "Centralized Baseline"
-    description: "Centralized memory baseline/reference run"
+  scalability_30_agents:
+    name: "Scalability: 30 Agents"
+    description: "Scalability test with 30 agents"
+    warehouse:
+      size: [28, 23]
+      storage_regions:
+        - {center: [7, 6], radius: 4}
+        - {center: [21, 17], radius: 4}
+      sortation_regions:
+        - {center: [14, 3], radius: 2}
+        - {center: [14, 20], radius: 2}
+    agents:
+      count: 30
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 0.30
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  scalability_40_agents:
+    name: "Scalability: 40 Agents"
+    description: "Scalability test with 40 agents"
+    warehouse:
+      size: [30, 24]
+      storage_regions:
+        - {center: [7, 6], radius: 5}
+        - {center: [23, 18], radius: 5}
+      sortation_regions:
+        - {center: [15, 3], radius: 2}
+        - {center: [15, 21], radius: 2}
+    agents:
+      count: 40
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 0.40
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  scalability_50_agents:
+    name: "Scalability: 50 Agents"
+    description: "Large scale test with 50 agents"
+    warehouse:
+      size: [30, 25]
+      storage_regions:
+        - {center: [7, 6], radius: 5}
+        - {center: [23, 19], radius: 5}
+      sortation_regions:
+        - {center: [15, 3], radius: 2}
+        - {center: [15, 22], radius: 2}
+    agents:
+      count: 50
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 0.50
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  scalability_100_agents:
+    name: "Scalability: 100 Agents"
+    description: "Large scale test with 100 agents"
+    warehouse:
+      size: [40, 35]
+      storage_regions:
+        - {center: [10, 9], radius: 7}
+        - {center: [30, 26], radius: 7}
+      sortation_regions:
+        - {center: [20, 4], radius: 3}
+        - {center: [20, 31], radius: 3}
+    agents:
+      count: 100
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 1.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  scalability_300_agents:
+    name: "Scalability: 300 Agents"
+    description: "Large scale test with 300 agents"
+    warehouse:
+      size: [70, 60]
+      storage_regions:
+        - {center: [17, 15], radius: 12}
+        - {center: [53, 45], radius: 12}
+      sortation_regions:
+        - {center: [35, 7], radius: 5}
+        - {center: [35, 53], radius: 5}
+    agents:
+      count: 300
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 3.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  scalability_500_agents:
+    name: "Scalability: 500 Agents"
+    description: "Large scale test with 500 agents"
+    warehouse:
+      size: [95, 80]
+      storage_regions:
+        - {center: [24, 20], radius: 16}
+        - {center: [71, 60], radius: 16}
+      sortation_regions:
+        - {center: [47, 10], radius: 7}
+        - {center: [47, 70], radius: 7}
+    agents:
+      count: 500
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 5.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  gossip_fast:
+    name: "Fast Gossip (every step)"
+    description: "Test with aggressive gossip (every step) - 10 agents"
     warehouse:
       size: [20, 15]
       storage_regions:
         - {center: [5, 4], radius: 3}
-        - {center: [15, 10], radius: 3}
+        - {center: [15, 11], radius: 3}
       sortation_regions:
         - {center: [10, 2], radius: 1}
-        - {center: [10, 12], radius: 1}
+        - {center: [10, 13], radius: 1}
     agents:
-      count: 8
+      count: 10
       initial_positions: "random"
-    aoi_threshold: 1000
+    coordination:
+      gossip_interval: 1
+      aoi_threshold: 1000
+      lease_ttl: 30000
     tasks:
-      arrival_rate: 0.1
+      arrival_rate: 0.10
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  gossip_slow:
+    name: "Slow Gossip (every 10 steps)"
+    description: "Test with slow gossip (every 10 steps) - 10 agents"
+    warehouse:
+      size: [20, 15]
+      storage_regions:
+        - {center: [5, 4], radius: 3}
+        - {center: [15, 11], radius: 3}
+      sortation_regions:
+        - {center: [10, 2], radius: 1}
+        - {center: [10, 13], radius: 1}
+    agents:
+      count: 10
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 10
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 0.10
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  # Centralized Baseline Experiments (for comparison with P2P)
+  centralized_50_agents:
+    name: "Centralized: 50 Agents"
+    description: "Centralized baseline with 50 agents"
+    warehouse:
+      size: [30, 25]
+      storage_regions:
+        - {center: [7, 6], radius: 5}
+        - {center: [23, 19], radius: 5}
+      sortation_regions:
+        - {center: [15, 3], radius: 2}
+        - {center: [15, 22], radius: 2}
+    agents:
+      count: 50
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 0.50
       types: ["pickup", "delivery", "sort"]
       priorities: [1, 1, 1]
     simulation:
       duration: 300
       step_interval: 50
       mode: centralized
+      seed: 42
 
-# Default metrics to collect across all experiments
+  centralized_100_agents:
+    name: "Centralized: 100 Agents"
+    description: "Centralized baseline with 100 agents"
+    warehouse:
+      size: [40, 35]
+      storage_regions:
+        - {center: [10, 9], radius: 7}
+        - {center: [30, 26], radius: 7}
+      sortation_regions:
+        - {center: [20, 4], radius: 3}
+        - {center: [20, 31], radius: 3}
+    agents:
+      count: 100
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 1.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: centralized
+      seed: 42
+
+  centralized_300_agents:
+    name: "Centralized: 300 Agents"
+    description: "Centralized baseline with 300 agents"
+    warehouse:
+      size: [70, 60]
+      storage_regions:
+        - {center: [17, 15], radius: 12}
+        - {center: [53, 45], radius: 12}
+      sortation_regions:
+        - {center: [35, 7], radius: 5}
+        - {center: [35, 53], radius: 5}
+    agents:
+      count: 300
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 3.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: centralized
+      seed: 42
+
+  centralized_500_agents:
+    name: "Centralized: 500 Agents"
+    description: "Centralized baseline with 500 agents"
+    warehouse:
+      size: [95, 80]
+      storage_regions:
+        - {center: [24, 20], radius: 16}
+        - {center: [71, 60], radius: 16}
+      sortation_regions:
+        - {center: [47, 10], radius: 7}
+        - {center: [47, 70], radius: 7}
+    agents:
+      count: 500
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 5.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: centralized
+      seed: 42
+
 metrics:
   performance:
     - "tasks_completed"
-    - "tasks_failed" 
+    - "tasks_failed"
     - "average_completion_time"
     - "agent_utilization"
     - "total_distance_traveled"
-  dsm:
-    - "memory_reads"
-    - "memory_writes"
-    - "gossip_messages"
-    - "aoi_violations"
-    - "partition_quality"
-    - "coordination_overhead"
-  system:
-    - "cpu_usage"
-    - "memory_usage"
-    - "network_traffic"
+    - "throughput_tps"
+  coordination:
+    - "avg_cache_size"
+    - "total_gossip_rounds"
+    - "tasks_in_registry"
+    - "active_leases"
+  time_series:
+    - "task_completion_timeline"
+    - "cache_entries_timeline"
+    - "jam_entries_timeline"
+    - "num_jammed_nodes_timeline"
+    - "jam_intensity_avg_timeline"
+    - "utilization_working_timeline"
+    - "utilization_active_timeline"
+    - "num_stuck_agents_timeline"
+    - "avg_stuck_counter_timeline"
+    - "max_stuck_counter_timeline"
+    - "stalls_in_transit_timeline"
+    - "stalls_at_resource_timeline"
+    - "stalls_idle_timeline"
 
-# Output configuration
 output:
-  directory: "results/"
   formats: ["csv", "json", "plots"]
   plots:
     - "task_completion_timeline"
-    - "agent_trajectories" 
-    - "dsm_performance_metrics"
-    - "system_resource_usage"
     - "dashboard_style"
