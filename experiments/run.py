@@ -417,10 +417,14 @@ class ExperimentRunner:
         p99 = float(np.percentile(latencies_s, 99)) if latencies_s else 0.0
         throughput_tps = (len(model.completed_tasks) / sim_duration_s) if sim_duration_s > 0 else 0.0
         
+        tasks_claimed = sum(agent.metrics['tasks_claimed'] for agent in model.schedule.agents)
+        
         performance_metrics = {
             'tasks_completed': len(model.completed_tasks),
             'tasks_failed': len(model.failed_tasks),
+            'tasks_claimed': tasks_claimed,
             'completion_rate': len(model.completed_tasks) / total_tasks if total_tasks > 0 else 0,
+            'claimed_completion_rate': len(model.completed_tasks) / tasks_claimed if tasks_claimed > 0 else 0,
             'average_completion_time': np.mean(latencies_s) if latencies_s else 0,
             'latency_p50': p50,
             'latency_p90': p90,

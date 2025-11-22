@@ -4,7 +4,7 @@ All agents request paths from this single authority, which has perfect global st
 but must serialize all pathfinding operations.
 """
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 import networkx as nx
 from collections import defaultdict
 
@@ -19,12 +19,15 @@ class CentralizedScheduler:
     - Runs space-time A* to avoid conflicts
     """
     
-    def __init__(self, warehouse_graph, logger=None):
+    def __init__(self, warehouse_graph, coordinator, logger=None):
         self.graph = warehouse_graph
+        self.coordinator = coordinator
         self.logger = logger
         
         self.path_reservations: Dict[int, List[Tuple[int, int]]] = {}
         self.agent_positions: Dict[int, int] = {}
+        self.agent_task_assignments: Dict[int, Tuple[int, int]] = {}  # agent_id -> (task_id, location)
+        self.assigned_task_ids: Set[int] = set()  # Track which tasks are currently assigned
         
         # Central congestion data store (perfect, always fresh)
         self.flow_data: Dict[int, float] = defaultdict(float)
@@ -40,6 +43,65 @@ class CentralizedScheduler:
     def update_agent_position(self, agent_id: int, node: int):
         """Agents must report their position to central authority."""
         self.agent_positions[agent_id] = node
+    
+    def notify_task_claimed(self, agent_id: int, task_id: int, task_location: int):
+        """
+        Notify scheduler that an agent claimed a task.
+        This allows the scheduler to avoid directing other agents to the same task location.
+        """
+        self.agent_task_assignments[agent_id] = (task_id, task_location)
+        self.assigned_task_ids.add(task_id)
+    
+    def notify_task_released(self, agent_id: int):
+        """Notify scheduler that an agent released/completed a task."""
+        if agent_id in self.agent_task_assignments:
+            task_id, _ = self.agent_task_assignments[agent_id]
+            self.assigned_task_ids.discard(task_id)
+            del self.agent_task_assignments[agent_id]
+    
+    def assign_task_to_agent(self, agent_id: int, agent_position: int) -> Optional[Tuple[int, int]]:
+        """
+        PUSH model: Central scheduler assigns best task to agent.
+        Assignment is ATOMIC - scheduler claims task on behalf of agent.
+        Returns (task_id, task_location) or None.
+        """
+        available_tasks = self.coordinator.get_available_tasks()
+        if not available_tasks:
+            return None
+        
+        # Get both assigned locations and task_ids to prevent duplicates
+        assigned_locations = set(loc for _, loc in self.agent_task_assignments.values())
+        
+        best_task = None
+        best_distance = float('inf')
+        
+        for task in available_tasks:
+            # Skip if task is already assigned to another agent
+            if task.task_id in self.assigned_task_ids:
+                continue
+            
+            # Skip if location is already assigned
+            if task.location in assigned_locations:
+                continue
+            
+            distance = abs(self.graph.node_to_pos(agent_position)[0] - self.graph.node_to_pos(task.location)[0]) + \
+                      abs(self.graph.node_to_pos(agent_position)[1] - self.graph.node_to_pos(task.location)[1])
+            
+            if distance < best_distance:
+                best_distance = distance
+                best_task = (task.task_id, task.location)
+        
+        if best_task:
+            task_id, task_location = best_task
+            claim_success = self.coordinator.try_claim(task_id, agent_id, ttl_ms=300000)
+            if claim_success:
+                self.agent_task_assignments[agent_id] = (task_id, task_location)
+                self.assigned_task_ids.add(task_id)
+                return best_task
+            else:
+                return None
+        
+        return None
     
     def report_flow(self, node: int, flow_value: float = 1.0):
         """Agent reports edge usage (perfect, instant update)."""
@@ -173,10 +235,8 @@ class CentralizedScheduler:
     def _manhattan_distance(self, node1: int, node2: int) -> float:
         """Manhattan distance heuristic."""
         try:
-            x1 = self.graph.graph.nodes[node1]['x']
-            y1 = self.graph.graph.nodes[node1]['y']
-            x2 = self.graph.graph.nodes[node2]['x']
-            y2 = self.graph.graph.nodes[node2]['y']
+            x1, y1 = self.graph.node_to_pos(node1)
+            x2, y2 = self.graph.node_to_pos(node2)
             return abs(x1 - x2) + abs(y1 - y2)
         except (KeyError, TypeError):
             return 0

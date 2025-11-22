@@ -1,0 +1,145 @@
+<mxfile host="app.diagrams.net" modified="2025-11-17T00:00:00.000Z" agent="draw.io" version="22.1.0">
+  <diagram name="Architecture Comparison" id="arch-comparison">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- Title -->
+        <mxCell id="title" value="Warehouse Coordination Architectures" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="350" y="30" width="500" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- CENTRALIZED ARCHITECTURE (LEFT SIDE) -->
+        <mxCell id="cent-label" value="CENTRALIZED (OpenRMF-style)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="300" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- Central Scheduler -->
+        <mxCell id="central-scheduler" value="Central Scheduler&#xa;(Bottleneck)&#xa;&#xa;• Perfect global state&#xa;• Space-Time A* pathfinding&#xa;• PUSH task assignment&#xa;• Conflict resolution" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#000000;strokeWidth=2;fontSize=12;align=center;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="120" y="160" width="220" height="120" as="geometry" />
+        </mxCell>
+        
+        <!-- Coordinator (small) -->
+        <mxCell id="cent-coordinator" value="Coordinator&#xa;(Task Registry)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1e1e1;strokeColor=#000000;strokeWidth=1;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="160" y="310" width="140" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow from scheduler to coordinator -->
+        <mxCell id="cent-arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=classic;endFill=1" edge="1" parent="1" source="central-scheduler" target="cent-coordinator">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        
+        <!-- Agents (centralized) -->
+        <mxCell id="cent-agent1" value="Agent 1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5d5d5;strokeColor=#000000;strokeWidth=1.5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="60" y="420" width="80" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cent-agent2" value="Agent 2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5d5d5;strokeColor=#000000;strokeWidth=1.5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="175" y="420" width="80" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cent-agent3" value="Agent N" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5d5d5;strokeColor=#000000;strokeWidth=1.5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="290" y="420" width="80" height="60" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrows from agents to scheduler -->
+        <mxCell id="cent-arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1.5;endArrow=classic;endFill=1;dashed=1" edge="1" parent="1" source="cent-agent1" target="central-scheduler">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cent-arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1.5;endArrow=classic;endFill=1;dashed=1" edge="1" parent="1" source="cent-agent2" target="central-scheduler">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cent-arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1.5;endArrow=classic;endFill=1;dashed=1" edge="1" parent="1" source="cent-agent3" target="central-scheduler">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow labels -->
+        <mxCell id="cent-label1" value="Request path" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9" vertex="1" parent="1">
+          <mxGeometry x="140" y="380" width="60" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- Characteristics box -->
+        <mxCell id="cent-chars" value="✓ Optimal paths&#xa;✓ Perfect coordination&#xa;✗ Single bottleneck&#xa;✗ Poor scalability" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff4e6;strokeColor=#d79b00;strokeWidth=2;fontSize=11;align=left;verticalAlign=top" vertex="1" parent="1">
+          <mxGeometry x="80" y="520" width="300" height="80" as="geometry" />
+        </mxCell>
+        
+        <!-- DISTRIBUTED ARCHITECTURE (RIGHT SIDE) -->
+        <mxCell id="dist-label" value="DISTRIBUTED (P2P DSM)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="600" y="100" width="300" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- Coordinator -->
+        <mxCell id="dist-coordinator" value="Coordinator&#xa;(Control Plane)&#xa;&#xa;• Task Registry&#xa;• Lease Manager&#xa;• JIT Locks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5fe;strokeColor=#01579b;strokeWidth=2;fontSize=12;align=center;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="640" y="160" width="220" height="100" as="geometry" />
+        </mxCell>
+        
+        <!-- Agents (distributed) with local cache -->
+        <mxCell id="dist-agent1" value="Agent 1&#xa;LocalDSMCache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#2e7d32;strokeWidth=2;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="550" y="340" width="100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="dist-agent2" value="Agent 2&#xa;LocalDSMCache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#2e7d32;strokeWidth=2;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="700" y="340" width="100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="dist-agent3" value="Agent N&#xa;LocalDSMCache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#2e7d32;strokeWidth=2;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="850" y="340" width="100" height="70" as="geometry" />
+        </mxCell>
+        
+        <!-- Gossip arrows between agents (P2P) -->
+        <mxCell id="gossip1" value="Gossip" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=classic;endFill=1;strokeColor=#2e7d32;dashed=1" edge="1" parent="1" source="dist-agent1" target="dist-agent2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gossip2" value="Gossip" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=classic;endFill=1;strokeColor=#2e7d32;dashed=1" edge="1" parent="1" source="dist-agent2" target="dist-agent3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gossip3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=classic;endFill=1;strokeColor=#2e7d32;dashed=1;curved=1" edge="1" parent="1" source="dist-agent1" target="dist-agent3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="450" />
+              <mxPoint x="900" y="450" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Thin arrows from agents to coordinator -->
+        <mxCell id="dist-arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;endArrow=classic;endFill=1;strokeColor=#666666" edge="1" parent="1" source="dist-agent1" target="dist-coordinator">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dist-arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;endArrow=classic;endFill=1;strokeColor=#666666" edge="1" parent="1" source="dist-agent2" target="dist-coordinator">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dist-arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;endArrow=classic;endFill=1;strokeColor=#666666" edge="1" parent="1" source="dist-agent3" target="dist-coordinator">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        
+        <!-- Label for coordinator interaction -->
+        <mxCell id="dist-label1" value="Task claim/release" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9" vertex="1" parent="1">
+          <mxGeometry x="680" y="290" width="80" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- DSM Data Plane box -->
+        <mxCell id="dsm-box" value="Data Plane (DSM Layers):&#xa;• Flow Trace  • Jam Signal&#xa;• Agent Location  • Path Intent&#xa;→ Propagated via Gossip (P2P)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f3e5f5;strokeColor=#4a148c;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="550" y="480" width="400" height="70" as="geometry" />
+        </mxCell>
+        
+        <!-- Characteristics box -->
+        <mxCell id="dist-chars" value="✓ High scalability&#xa;✓ No single bottleneck&#xa;✗ Stale data (AoI)&#xa;✗ 7.9% more distance/task" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#2e7d32;strokeWidth=2;fontSize=11;align=left;verticalAlign=top" vertex="1" parent="1">
+          <mxGeometry x="600" y="580" width="300" height="80" as="geometry" />
+        </mxCell>
+        
+        <!-- Divider line -->
+        <mxCell id="divider" value="" style="endArrow=none;html=1;strokeWidth=3;strokeColor=#666666" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="480" y="140" as="sourcePoint" />
+            <mxPoint x="480" y="680" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Performance comparison box at bottom -->
+        <mxCell id="perf-box" value="Performance @ 500 Agents:  Distributed +9% throughput, +8.9% utilization, -13.8% latency BUT +17.6% total distance" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f57f17;strokeWidth=3;fontSize=13;align=center;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="80" y="700" width="870" height="50" as="geometry" />
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+

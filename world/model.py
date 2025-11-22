@@ -98,7 +98,11 @@ class WarehouseDSMModel(Model):
         self.central_scheduler = None
         if self.mode == 'centralized':
             from central.scheduler import CentralizedScheduler
-            self.central_scheduler = CentralizedScheduler(self.warehouse, logger=self.logger)
+            self.central_scheduler = CentralizedScheduler(
+                warehouse_graph=self.warehouse,
+                coordinator=self.coordinator,
+                logger=self.logger
+            )
             if self.logger:
                 self.logger.info("Initialized CENTRALIZED mode with central path scheduler (bottleneck)")
         

@@ -395,6 +395,62 @@ experiments:
       mode: centralized
       seed: 42
 
+  scalability_1000_agents:
+    name: "Scalability: 1000 Agents"
+    description: "Extreme scale test with 1000 agents"
+    warehouse:
+      size: [120, 100]
+      storage_regions:
+        - {center: [30, 25], radius: 20}
+        - {center: [90, 75], radius: 20}
+      sortation_regions:
+        - {center: [60, 12], radius: 9}
+        - {center: [60, 88], radius: 9}
+    agents:
+      count: 1000
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 10.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: p2p
+      seed: 42
+
+  centralized_1000_agents:
+    name: "Centralized: 1000 Agents"
+    description: "Centralized baseline with 1000 agents"
+    warehouse:
+      size: [120, 100]
+      storage_regions:
+        - {center: [30, 25], radius: 20}
+        - {center: [90, 75], radius: 20}
+      sortation_regions:
+        - {center: [60, 12], radius: 9}
+        - {center: [60, 88], radius: 9}
+    agents:
+      count: 1000
+      initial_positions: "random"
+    coordination:
+      gossip_interval: 3
+      aoi_threshold: 1000
+      lease_ttl: 30000
+    tasks:
+      arrival_rate: 10.0
+      types: ["pickup", "delivery", "sort"]
+      priorities: [1, 1, 1]
+    simulation:
+      duration: 300
+      step_interval: 50
+      mode: centralized
+      seed: 42
+
 metrics:
   performance:
     - "tasks_completed"

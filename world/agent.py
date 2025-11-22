@@ -128,6 +128,19 @@ class RobotAgent(mesa.Agent):
         """Event-driven: Watch for tasks and react to notifications"""
         coordinator = self.model.coordinator
         
+        # CENTRALIZED MODE: PUSH - scheduler assigns tasks (atomically claims)
+        if self.model.mode == 'centralized':
+            assignment = self.model.central_scheduler.assign_task_to_agent(self.unique_id, self.node)
+            if assignment:
+                task_id, task_location = assignment
+                if task_id not in self.failed_tasks_cooldown:
+                    self._on_task_assigned(task_id, task_location)
+                else:
+                    coordinator.release_claim(task_id, self.unique_id)
+                    self.model.central_scheduler.notify_task_released(self.unique_id)
+            return
+        
+        # DISTRIBUTED MODE: PULL - agent searches and claims (unchanged)
         if not hasattr(self, 'watch_handle') or self.watch_handle is None:
             self.watch_handle = coordinator.watch(
                 region_id=self.node,
@@ -212,11 +225,16 @@ class RobotAgent(mesa.Agent):
                         self.watch_handle = None
                     
                     if self.node == task_location:
-                        self.model.logger.info(f"Agent {self.unique_id}: IDLE->WORKING (claimed task {task_id} already at location {task_location})")
-                        self.state = AgentState.WORKING
-                        self.work_timer = self.work_duration
-                        self.path = []
-                        self.stuck_counter = 0
+                        node_resource_id = f"node_{task_location}"
+                        lock_success = coordinator.acquire_lock(node_resource_id, self.unique_id, ttl_ms=30000)
+                        if lock_success:
+                            self.model.logger.info(f"Agent {self.unique_id}: IDLE->WORKING (claimed task {task_id} already at location {task_location})")
+                            self.state = AgentState.WORKING
+                            self.work_timer = self.work_duration
+                            self.path = []
+                            self.stuck_counter = 0
+                        else:
+                            self._fail_current_task()
                         return
                     
                     self.path = self._plan_path(self.node, task_location)
@@ -237,6 +255,32 @@ class RobotAgent(mesa.Agent):
         else:
             # No visible tasks after evaluation — gentle wander
             self._idle_wander_to_staging()
+    
+    def _on_task_assigned(self, task_id: int, task_location: int):
+        """Handle centralized task assignment (PUSH model) - already claimed by scheduler"""
+        self.model.logger.info(f"Agent {self.unique_id}: ASSIGNED task {task_id} at location {task_location}")
+        self.current_task_id = task_id
+        self.task_location = task_location
+        self.metrics['tasks_claimed'] += 1
+        
+        if self.node == task_location:
+            node_resource_id = f"node_{task_location}"
+            coordinator = self.model.coordinator
+            lock_success = coordinator.acquire_lock(node_resource_id, self.unique_id, ttl_ms=30000)
+            if lock_success:
+                self.model.logger.info(f"Agent {self.unique_id}: IDLE->WORKING (assigned task {task_id} already at location)")
+                self.state = AgentState.WORKING
+                self.work_timer = self.work_duration
+                self.path = []
+                self.stuck_counter = 0
+            else:
+                self._fail_current_task()
+        else:
+            self.path = self._plan_path(self.node, task_location)
+            if self.path:
+                self.state = AgentState.NAVIGATING
+            else:
+                self._fail_current_task()
     
     def _handle_navigating(self):
         """Move along path towards task location"""
@@ -335,6 +379,10 @@ class RobotAgent(mesa.Agent):
             
             coordinator.complete_task(self.current_task_id, self.unique_id)
             self.model.logger.info(f"Agent {self.unique_id}: COMPLETED task {self.current_task_id}, released node lock")
+            
+            # Notify central scheduler in centralized mode
+            if self.model.mode == 'centralized' and self.model.central_scheduler:
+                self.model.central_scheduler.notify_task_released(self.unique_id)
             
             self.metrics['tasks_completed'] += 1
             
@@ -457,6 +505,10 @@ class RobotAgent(mesa.Agent):
             self.model.logger.info(f"Agent {self.unique_id}: FAILED task {self.current_task_id} - releasing back to available")
             
             coordinator = self.model.coordinator
+            
+            # Notify central scheduler in centralized mode
+            if self.model.mode == 'centralized' and self.model.central_scheduler:
+                self.model.central_scheduler.notify_task_released(self.unique_id)
             
             coordinator.release_claim(self.current_task_id, self.unique_id)
             
