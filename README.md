@@ -1,4 +1,4 @@
-# Warehouse Distributed Shared Memory System
+# Context Fabric for Embodied Robots Using Distributed Shared Memory System
 
 A comprehensive distributed shared memory (DSM) system for warehouse robotics, combining Mesa agent-based modeling with Lingua Franca deterministic coordination.
 
