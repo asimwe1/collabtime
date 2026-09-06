@@ -1,5 +1,29 @@
 # Warehouse Simulation Architecture
 
+## Implementation Status (code audit, 2026-09-06)
+
+This section describes the repository as implemented, not its intended design. It should be updated when the listed gaps are resolved.
+
+| Area | Status | Evidence / gap |
+| --- | --- | --- |
+| Warehouse graph, agents, task lifecycle, local caches, and coordinator | Implemented prototype | The core simulation path exists in `world/`, `coord/`, `dsm/local_cache.py`, and `pathfinder/`. |
+| P2P data plane | Partial | Agents gossip local caches, but task ownership still depends on the in-process `Coordinator`; cache timestamps use wall-clock time rather than the simulation/LF clock. |
+| Centralized comparison | Partial | A central scheduler exists, but it does not model a request queue or measured scheduling latency, so its claimed serialization bottleneck is not yet quantified. |
+| DSM router and partitioning | Prototype / disconnected | `DSMRouter`, `DSM`, and graph partitioning are present, but the active P2P model uses agent-local caches instead. Router boundaries assume a linear node topology, not warehouse graph adjacency. |
+| Dashboard distributed mode | Broken integration | `dashboard.state.create_initial_model()` passes `dsm=` to `WarehouseDSMModel`, whose constructor has no such parameter. The model also does not retain a DSM instance. |
+| Experiment reproducibility | Partial | Configurations carry seeds, but global `random`, NumPy, graph special-node selection, and wall-clock timestamps are not consistently controlled by the configured seed or logical clock. |
+| Metrics and scientific validity | Partial | Several advertised metrics are placeholders (`get_avg_completion_time`, `get_dsm_message_rate`), and AoI/gossip/central queueing are not measured end-to-end. |
+| Packaging and contributor workflow | Broken / missing | `setup.py` references an obsolete project URL, nonexistent `viz.app:main`, and nonexistent `warehouse` package data. No `tests/` directory or CI workflow exists. |
+
+Audit method: repository-wide static review and `python -m compileall`; dependency-based runtime tests were not run because packages could not be downloaded in the current environment.
+
+### Priority Order
+
+1. Restore a coherent simulation interface and add regression tests for its task, lease, movement, and dashboard construction paths.
+2. Use a single logical clock throughout the simulation, coordinator, caches, and metrics.
+3. Make distributed and centralized baselines comparable by measuring the behavior each design claims to represent.
+4. Repair packaging, documentation, and CI so contributors can reproduce results.
+
 ## Current System Architecture
 
 ```
@@ -323,4 +347,3 @@ Agent needs path from A to B:
 - **Agents**: utilization, distance_traveled, state distribution
 - **DSM**: reads, writes, gossip_messages, aoi_violations, coordination_time
 - **System**: throughput (tasks/sec), T50/T90 latency, stability region
-
