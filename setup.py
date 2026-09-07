@@ -31,6 +31,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/warehouse-dsm/warehouse-dsm",
     packages=find_packages(),
+    py_modules=["app", "config"],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
@@ -70,14 +71,16 @@ setup(
     entry_points={
         "console_scripts": [
             "warehouse-dsm-run=experiments.run:main",
-            "warehouse-dsm-viz=viz.app:main",
+            "warehouse-dsm-viz=app:main",
         ],
     },
     package_data={
-        "warehouse": [
-            "lf/*.lf",
-            "experiments/*.yaml",
-            "experiments/README.md",
+        "experiments": [
+            "*.yaml",
+            "README.md",
+        ],
+        "lf": [
+            "*.lf",
         ],
     },
     include_package_data=True,
