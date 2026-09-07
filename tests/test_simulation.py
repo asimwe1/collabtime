@@ -26,6 +26,17 @@ def test_model_uses_supplied_logical_time_for_agent_cache_updates():
     assert agent.local_cache.agent_location[agent.unique_id]["timestamp"] == 125
 
 
+def test_p2p_model_records_gossip_messages():
+    model = WarehouseDSMModel(n_agents=2, task_arrival_rate=0.0, seed=42, mode="p2p")
+
+    for _ in range(3):
+        model.step()
+
+    metrics = model.get_coordination_metrics()
+    assert metrics["gossip_rounds"] == 1
+    assert metrics["gossip_messages"] == 2
+
+
 @pytest.mark.parametrize("mode", ("p2p", "centralized"))
 def test_model_completes_a_task_at_a_nearby_free_node(mode):
     model = WarehouseDSMModel(

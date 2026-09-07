@@ -7,6 +7,7 @@ but must serialize all pathfinding operations.
 from typing import List, Dict, Tuple, Optional, Set
 import networkx as nx
 from collections import defaultdict
+import time
 
 
 class CentralizedScheduler:
@@ -35,7 +36,8 @@ class CentralizedScheduler:
         
         self.metrics = {
             'total_requests': 0,
-            'total_computation_time': 0,
+            'total_computation_time_ms': 0.0,
+            'max_computation_time_ms': 0.0,
             'active_reservations': 0,
             'congestion_data_size': 0
         }
@@ -122,6 +124,7 @@ class CentralizedScheduler:
         This is the bottleneck: all agents wait in line for the scheduler.
         """
         self.metrics['total_requests'] += 1
+        request_start = time.perf_counter()
         
         occupied_nodes = set(self.agent_positions.values())
         occupied_nodes.discard(start)
@@ -143,6 +146,12 @@ class CentralizedScheduler:
             if self.logger:
                 self.logger.warning(f"Central scheduler pathfinding failed: {e}")
             return []
+        finally:
+            elapsed_ms = (time.perf_counter() - request_start) * 1000
+            self.metrics['total_computation_time_ms'] += elapsed_ms
+            self.metrics['max_computation_time_ms'] = max(
+                self.metrics['max_computation_time_ms'], elapsed_ms
+            )
     
     def release_path(self, agent_id: int):
         """Agent releases its path reservation when done."""
@@ -243,8 +252,14 @@ class CentralizedScheduler:
     
     def get_metrics(self) -> Dict:
         """Return scheduler performance metrics."""
+        total_requests = self.metrics['total_requests']
         return {
-            'total_path_requests': self.metrics['total_requests'],
+            'total_path_requests': total_requests,
             'active_path_reservations': self.metrics['active_reservations'],
+            'total_path_planning_time_ms': self.metrics['total_computation_time_ms'],
+            'avg_path_planning_time_ms': (
+                self.metrics['total_computation_time_ms'] / total_requests
+                if total_requests else 0.0
+            ),
+            'max_path_planning_time_ms': self.metrics['max_computation_time_ms'],
         }
-

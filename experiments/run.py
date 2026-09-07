@@ -441,20 +441,23 @@ class ExperimentRunner:
             # Centralized: report central scheduler data store size
             avg_cache_size = model.central_scheduler.metrics['congestion_data_size'] if model.central_scheduler else 0
             total_gossip_rounds = 0
+            coordination_details = model.get_coordination_metrics()
         else:
             # Distributed: report per-agent local cache and gossip
             avg_cache_size = np.mean([
                 sum(agent.local_cache.get_stats().values()) if agent.local_cache else 0
                 for agent in model.schedule.agents
             ])
-            total_gossip_rounds = df['gossip_rounds'].max() if 'gossip_rounds' in df else 0
+            coordination_details = model.get_coordination_metrics()
+            total_gossip_rounds = coordination_details['gossip_rounds']
         
         coordination_metrics = {
             'avg_cache_size': float(avg_cache_size),
             'total_gossip_rounds': int(total_gossip_rounds),
             'tasks_in_registry': len(model.coordinator.task_registry.tasks),
             'active_leases': len([l for l in model.coordinator.lease_manager.leases.values() if l]),
-            'coordination_mode': model.mode
+            'coordination_mode': model.mode,
+            **coordination_details,
         }
         
         time_series = {

@@ -90,6 +90,11 @@ class WarehouseDSMModel(Model):
         self.start_time = time.time()
         # Edge reservations for conflict-free movements (key: unordered edge, value: expire_step)
         self.edge_reservations = {}
+        self.coordination_metrics = {
+            'gossip_rounds': 0,
+            'gossip_messages': 0,
+            'gossip_time_ms': 0.0,
+        }
         
         # Create or accept warehouse graph
         self.warehouse = warehouse_graph or create_standard_warehouse(warehouse_width, warehouse_height)
@@ -293,6 +298,8 @@ class WarehouseDSMModel(Model):
             return
         
         self.random.shuffle(agents)
+        gossip_start = time.perf_counter()
+        pairs = 0
         
         for i in range(0, len(agents) - 1, 2):
             agent_a = agents[i]
@@ -301,6 +308,11 @@ class WarehouseDSMModel(Model):
             if hasattr(agent_a, 'local_cache') and hasattr(agent_b, 'local_cache'):
                 agent_a.local_cache.merge_from(agent_b.local_cache)
                 agent_b.local_cache.merge_from(agent_a.local_cache)
+                pairs += 1
+
+        self.coordination_metrics['gossip_rounds'] += 1
+        self.coordination_metrics['gossip_messages'] += pairs * 2
+        self.coordination_metrics['gossip_time_ms'] += (time.perf_counter() - gossip_start) * 1000
     
     def try_reserve_edge(self, from_node: int, to_node: int, duration_steps: int) -> bool:
         """Reserve an edge lane, allowing multi-agent traversal up to aisle width.
@@ -448,8 +460,16 @@ class WarehouseDSMModel(Model):
     
     def get_dsm_message_rate(self) -> float:
         """Get DSM messages per second"""
-        # This would need DSM instrumentation
-        return 0.0
+        elapsed_s = self.current_time_ms / 1000.0
+        if elapsed_s <= 0:
+            return 0.0
+        return self.coordination_metrics['gossip_messages'] / elapsed_s
+
+    def get_coordination_metrics(self) -> Dict[str, float]:
+        """Return data-plane coordination metrics for the active mode."""
+        if self.mode == 'centralized' and self.central_scheduler:
+            return self.central_scheduler.get_metrics()
+        return self.coordination_metrics.copy()
     
     def get_avg_agent_distance(self) -> float:
         """Get average distance traveled per agent"""
