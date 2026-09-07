@@ -8,7 +8,6 @@ Single source of truth for task lifecycle (created -> available -> claimed -> co
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
-import time
 
 
 class TaskStatus(Enum):
@@ -41,8 +40,8 @@ class TaskRegistry:
         self.tasks: Dict[int, Task] = {}
         self.task_counter = 0
     
-    def create_task(self, location: int, task_type: str = "pick", 
-                   priority: float = 1.0) -> int:
+    def create_task(self, location: int, task_type: str = "pick",
+                    priority: float = 1.0, current_time_ms: int = 0) -> int:
         """
         Create a new task at the specified location.
         Returns task_id.
@@ -57,7 +56,7 @@ class TaskRegistry:
             priority=priority,
             status=TaskStatus.AVAILABLE,
             agent_id=None,
-            created_ms=int(time.time() * 1000),
+            created_ms=current_time_ms,
             claimed_ms=None,
             completed_ms=None
         )
@@ -78,7 +77,7 @@ class TaskRegistry:
                 available.append(task)
         return available
     
-    def claim_task(self, task_id: int, agent_id: int) -> bool:
+    def claim_task(self, task_id: int, agent_id: int, current_time_ms: int = 0) -> bool:
         """
         Atomically claim a task.
         Returns True if successful, False if already claimed.
@@ -89,10 +88,10 @@ class TaskRegistry:
         
         task.status = TaskStatus.CLAIMED
         task.agent_id = agent_id
-        task.claimed_ms = int(time.time() * 1000)
+        task.claimed_ms = current_time_ms
         return True
     
-    def complete_task(self, task_id: int, agent_id: int) -> bool:
+    def complete_task(self, task_id: int, agent_id: int, current_time_ms: int = 0) -> bool:
         """
         Mark task as completed.
         Returns True if successful, False if not owned by agent.
@@ -102,7 +101,7 @@ class TaskRegistry:
             return False
         
         task.status = TaskStatus.COMPLETED
-        task.completed_ms = int(time.time() * 1000)
+        task.completed_ms = current_time_ms
         return True
     
     def fail_task(self, task_id: int, agent_id: int, retry: bool = True) -> bool:
@@ -126,4 +125,3 @@ class TaskRegistry:
     def get_task(self, task_id: int) -> Optional[Task]:
         """Get task by ID"""
         return self.tasks.get(task_id)
-

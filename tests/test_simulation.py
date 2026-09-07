@@ -16,6 +16,16 @@ def test_congestion_aware_routing_returns_a_connected_path():
     assert all(warehouse.is_adjacent(node, next_node) for node, next_node in zip(path, path[1:]))
 
 
+def test_model_uses_supplied_logical_time_for_agent_cache_updates():
+    model = WarehouseDSMModel(n_agents=1, task_arrival_rate=0.0, seed=42, mode="p2p")
+    agent = model.schedule.agents[0]
+
+    model.advance(current_time_ms=125)
+
+    assert model.current_time_ms == 125
+    assert agent.local_cache.agent_location[agent.unique_id]["timestamp"] == 125
+
+
 @pytest.mark.parametrize("mode", ("p2p", "centralized"))
 def test_model_completes_a_task_at_a_nearby_free_node(mode):
     model = WarehouseDSMModel(

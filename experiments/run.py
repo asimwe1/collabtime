@@ -237,10 +237,10 @@ class ExperimentRunner:
                 self.logger.info("Connected to LF tick server on 127.0.0.1:9001")
                 
                 current_step = 0
-                for _ in tick_iter:
+                for current_time_ms in tick_iter:
                     if current_step >= steps:
                         break
-                    model.step()
+                    model.advance(current_time_ms)
                     if current_step % 10 == 0:
                         step_metrics = self.collect_step_metrics(model, current_step)
                         metrics_data.append(step_metrics)
@@ -377,7 +377,7 @@ class ExperimentRunner:
         
         return {
             'step': step,
-            'timestamp': time.time(),
+            'timestamp': model.current_time_ms / 1000.0,
             'tasks_created': model.task_counter,
             'tasks_completed': len([t for t in model.completed_tasks]),
             'tasks_active': len([t for t in model.active_tasks]),

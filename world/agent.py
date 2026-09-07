@@ -8,7 +8,6 @@ Simplified hardcoded agent behavior:
 """
 
 import mesa
-import time
 import random
 from typing import Optional, Dict, Any, List
 from enum import Enum
@@ -66,7 +65,7 @@ class RobotAgent(mesa.Agent):
         self.failed_task_cooldown_duration = 300 
         
         # Peer-to-peer DSM: local cache (only in distributed mode)
-        self.local_cache = LocalDSMCache(unique_id) if model.mode != 'centralized' else None
+        self.local_cache = LocalDSMCache(unique_id, lambda: model.current_time_ms) if model.mode != 'centralized' else None
         
         # Performance tracking
         self.metrics = {
@@ -92,7 +91,7 @@ class RobotAgent(mesa.Agent):
         # Write own location to local cache (for others to see via gossip)
         # Only in distributed mode
         if self.local_cache:
-            current_time_ms = int(time.time() * 1000)
+            current_time_ms = self.model.current_time_ms
             self.local_cache.write_agent_location(self.unique_id, self.node, current_time_ms)
         
         # Decrement cooldowns for failed tasks
@@ -481,7 +480,7 @@ class RobotAgent(mesa.Agent):
                 self.model.logger.error(f"Agent {self.unique_id}: A* returned empty path from {from_node} to {to_node}")
                 return []
             
-            current_time_ms = int(time.time() * 1000)
+            current_time_ms = self.model.current_time_ms
             estimated_time_per_step = int(self.model.step_duration_s * MOVEMENT_DURATION_STEPS * 1000)
             
             for i, node in enumerate(path):
@@ -547,7 +546,7 @@ class RobotAgent(mesa.Agent):
         elif self.local_cache:
             # Distributed: write to local cache (eventual consistency via gossip)
             try:
-                current_time_ms = int(time.time() * 1000)
+                current_time_ms = self.model.current_time_ms
                 self.local_cache.write_flow(to_node, 1.0, current_time_ms)
             except Exception:
                 pass
@@ -565,7 +564,7 @@ class RobotAgent(mesa.Agent):
         elif self.local_cache:
             # Distributed: write to local cache (eventual consistency via gossip)
             try:
-                current_time_ms = int(time.time() * 1000)
+                current_time_ms = self.model.current_time_ms
                 self.local_cache.write_jam(self.node, jam_value, current_time_ms)
             except Exception:
                 pass

@@ -18,6 +18,20 @@ def test_expired_task_lease_returns_task_to_available():
     assert coordinator.get_lease_owner(task_id) is None
 
 
+def test_coordinator_records_logical_task_timestamps():
+    coordinator = Coordinator()
+    coordinator.tick(125)
+    task_id = coordinator.create_task(location=1)
+
+    assert coordinator.try_claim(task_id, agent_id=7)
+    assert coordinator.complete_task(task_id, agent_id=7)
+
+    task = coordinator.task_registry.get_task(task_id)
+    assert task.created_ms == 125
+    assert task.claimed_ms == 125
+    assert task.completed_ms == 125
+
+
 def test_gossip_merges_newer_cache_entries():
     source = LocalDSMCache(agent_id=1)
     replica = LocalDSMCache(agent_id=2)
@@ -29,3 +43,14 @@ def test_gossip_merges_newer_cache_entries():
 
     assert replica.read_flow(node_id=12, max_aoi_ms=1_000) == 3.0
     assert replica.read_agents_at_node(node_id=12, max_aoi_ms=1_000) == 1
+
+
+def test_cache_uses_injected_clock_for_aoi_filtering():
+    current_time_ms = 100
+    cache = LocalDSMCache(agent_id=1, clock=lambda: current_time_ms)
+    cache.write_jam(node_id=12, value=2.0, timestamp_ms=100)
+
+    assert cache.read_jam(node_id=12, max_aoi_ms=10) == 1.0
+
+    current_time_ms = 111
+    assert cache.read_jam(node_id=12, max_aoi_ms=10) == 0.0

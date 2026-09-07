@@ -86,7 +86,8 @@ class Coordinator:
         task_id = self.task_registry.create_task(
             location=location,
             task_type=task_type,
-            priority=priority
+            priority=priority,
+            current_time_ms=self.current_time_ms,
         )
         
         self.watch_manager.fire('task_created', {
@@ -142,7 +143,7 @@ class Coordinator:
         )
         
         if lease_success:
-            self.task_registry.claim_task(task_id, agent_id)
+            self.task_registry.claim_task(task_id, agent_id, self.current_time_ms)
             self.metrics['claim_successes'] += 1
             
             self.watch_manager.fire('task_claimed', {
@@ -195,7 +196,7 @@ class Coordinator:
             return False
         
         self.lease_manager.release(task_id, agent_id)
-        success = self.task_registry.complete_task(task_id, agent_id)
+        success = self.task_registry.complete_task(task_id, agent_id, self.current_time_ms)
         
         if success:
             self.watch_manager.fire('task_completed', {
@@ -294,4 +295,3 @@ class Coordinator:
                 task = self.task_registry.get_task(resource_id)
                 if task and task.status == TaskStatus.CLAIMED:
                     self.task_registry.fail_task(resource_id, agent_id, retry=True)
-

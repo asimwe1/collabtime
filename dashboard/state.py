@@ -128,13 +128,13 @@ def simulation_loop():
             if client.sock:
                 logger.info("Successfully connected to LF tick server!")
                 print("Connected to LF tick server!")
-                for _ in client.ticks():
+                for current_time_ms in client.ticks():
                     # Auto-stop if deadline reached
                     if running.get() and auto_stop_deadline.get() and time.time() >= auto_stop_deadline.get():
                         running.set(False)
                     if running.get() and model.get():
                         with model_lock:
-                            model.get().step()
+                            model.get().advance(current_time_ms)
                     if not running.get():
                         time.sleep(0.1)
             else:

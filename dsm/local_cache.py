@@ -5,7 +5,7 @@ Each agent maintains its own local cache with timestamped values.
 Gossip protocol merges caches using Last-Write-Wins (LWW) semantics.
 """
 
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional
 import time
 
 
@@ -21,14 +21,18 @@ class LocalDSMCache:
     - resource_state: Physical resource lock ownership
     """
     
-    def __init__(self, agent_id: int):
+    def __init__(self, agent_id: int, clock: Optional[Callable[[], int]] = None):
         self.agent_id = agent_id
+        self._clock = clock or (lambda: int(time.time() * 1000))
         
         self.flow_trace: Dict[int, Dict[str, Any]] = {}
         self.jam_signal: Dict[int, Dict[str, Any]] = {}
         self.agent_location: Dict[int, Dict[str, Any]] = {}
         self.path_intent: Dict[tuple, Dict[str, Any]] = {}
         self.resource_state: Dict[str, Dict[str, Any]] = {}
+
+    def _now_ms(self) -> int:
+        return self._clock()
     
     def write_flow(self, node_id: int, value: float, timestamp_ms: int):
         """Write flow trace value at node"""
@@ -55,7 +59,7 @@ class LocalDSMCache:
     
     def read_flow(self, node_id: int, max_aoi_ms: int) -> float:
         """Read flow trace at node (with AoI filtering)"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         entry = self.flow_trace.get(node_id)
         
         if entry and (current_time - entry['timestamp']) <= max_aoi_ms:
@@ -64,7 +68,7 @@ class LocalDSMCache:
     
     def read_jam(self, node_id: int, max_aoi_ms: int) -> float:
         """Read jam signal at node (with AoI filtering)"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         entry = self.jam_signal.get(node_id)
         
         if entry and (current_time - entry['timestamp']) <= max_aoi_ms:
@@ -80,7 +84,7 @@ class LocalDSMCache:
     
     def read_agents_at_node(self, node_id: int, max_aoi_ms: int) -> int:
         """Count agents at a node based on cached locations (with AoI filtering)"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         count = 0
         
         for agent_id, entry in self.agent_location.items():
@@ -106,7 +110,7 @@ class LocalDSMCache:
     def check_path_conflicts(self, node_id: int, my_arrival_time: int, 
                             max_aoi_ms: int, conflict_window_ms: int = 5000) -> bool:
         """Check if other agents plan to be at this node around the same time"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         
         for (agent_id, intent_node), entry in self.path_intent.items():
             if intent_node != node_id:
@@ -136,7 +140,7 @@ class LocalDSMCache:
     
     def read_resource_owner(self, resource_id: str, max_aoi_ms: int) -> Optional[int]:
         """Check who owns a resource (returns None if free or stale data)"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         entry = self.resource_state.get(resource_id)
         
         if not entry:
@@ -212,7 +216,7 @@ class LocalDSMCache:
     
     def cleanup_stale_entries(self, max_age_ms: int):
         """Remove cache entries older than max_age_ms to prevent unbounded growth"""
-        current_time = int(time.time() * 1000)
+        current_time = self._now_ms()
         
         self.flow_trace = {
             k: v for k, v in self.flow_trace.items()
@@ -238,4 +242,3 @@ class LocalDSMCache:
             k: v for k, v in self.resource_state.items()
             if current_time - v['timestamp'] <= max_age_ms
         }
-

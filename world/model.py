@@ -84,6 +84,9 @@ class WarehouseDSMModel(Model):
         else:
             self._time_to_next_arrival_s = float('inf')
         self.step_count = 0
+        self.current_time_ms = 0
+        self._last_step_time_ms = 0
+        self._next_step_time_ms = None
         self.start_time = time.time()
         # Edge reservations for conflict-free movements (key: unordered edge, value: expire_step)
         self.edge_reservations = {}
@@ -187,10 +190,26 @@ class WarehouseDSMModel(Model):
                 self.schedule.add(agent)
                 agent_id += 1
     
+    def advance(self, current_time_ms: int) -> None:
+        """Advance the model using an externally supplied logical time."""
+        if current_time_ms < self.current_time_ms:
+            raise ValueError("Simulation time cannot move backwards")
+        self._next_step_time_ms = current_time_ms
+        self.step()
+
     def step(self):
         """Execute one model step"""
         self.step_count += 1
-        current_time_ms = int(self.step_count * self.step_duration_s * 1000)
+        current_time_ms = self._next_step_time_ms
+        self._next_step_time_ms = None
+        if current_time_ms is None:
+            current_time_ms = int(self.step_count * self.step_duration_s * 1000)
+        if current_time_ms < self.current_time_ms:
+            raise ValueError("Simulation time cannot move backwards")
+
+        elapsed_s = (current_time_ms - self._last_step_time_ms) / 1000.0
+        self.current_time_ms = current_time_ms
+        self._last_step_time_ms = current_time_ms
         
         # Tick coordinator first (expire leases, detect failures)
         self.coordinator.tick(current_time_ms)
@@ -207,7 +226,7 @@ class WarehouseDSMModel(Model):
                 self.edge_reservations.pop(key, None)
         
         # Generate new tasks
-        self._generate_tasks()
+        self._generate_tasks(elapsed_s)
         
         # Step all agents
         self.schedule.step()
@@ -306,10 +325,10 @@ class WarehouseDSMModel(Model):
             return True
         return False
     
-    def _generate_tasks(self):
+    def _generate_tasks(self, elapsed_s: float):
         """Generate new tasks using event-driven Poisson arrivals (exact in continuous time)."""
         lam = max(self.task_arrival_rate, 0.0)
-        dt = max(self.step_duration_s, 0.0)
+        dt = max(elapsed_s, 0.0)
         if lam <= 0 or dt <= 0:
             return
         
@@ -360,7 +379,7 @@ class WarehouseDSMModel(Model):
             # Use coordinator for task creation (control plane)
             task_id = self.coordinator.create_task(location)
             
-            sim_time = self.step_count * self.step_duration_s
+            sim_time = self.current_time_ms / 1000.0
             self.active_tasks[task_id] = {
                 'location': location,
                 'created_step': self.step_count,
@@ -385,7 +404,7 @@ class WarehouseDSMModel(Model):
                 if status in ['completed', 'failed', 'expired']:
                     completed_tasks.append(task_id)
                     if status == 'completed':
-                        completion_time = self.step_count * self.step_duration_s
+                        completion_time = self.current_time_ms / 1000.0
                         task_record = {
                             'task_id': task_id,
                             'start_time': task_info.get('start_time'),
@@ -393,7 +412,7 @@ class WarehouseDSMModel(Model):
                         }
                         self.completed_tasks.append(task_record)
                         created_time = task_info.get('created_time')
-                        if created_time:
+                        if created_time is not None:
                             self.completed_latencies.append(completion_time - created_time)
                     else:
                         self.failed_tasks.append({'task_id': task_id})
