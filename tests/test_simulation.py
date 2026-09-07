@@ -26,6 +26,17 @@ def test_model_uses_supplied_logical_time_for_agent_cache_updates():
     assert agent.local_cache.agent_location[agent.unique_id]["timestamp"] == 125
 
 
+def test_seed_reproduces_layout_and_initial_agent_positions():
+    first = WarehouseDSMModel(n_agents=4, task_arrival_rate=0.1, seed=42, mode="p2p")
+    second = WarehouseDSMModel(n_agents=4, task_arrival_rate=0.1, seed=42, mode="p2p")
+
+    assert first.warehouse.node_types == second.warehouse.node_types
+    assert [agent.node for agent in first.schedule.agents] == [
+        agent.node for agent in second.schedule.agents
+    ]
+    assert first._time_to_next_arrival_s == second._time_to_next_arrival_s
+
+
 def test_p2p_model_records_gossip_messages():
     model = WarehouseDSMModel(n_agents=2, task_arrival_rate=0.0, seed=42, mode="p2p")
 

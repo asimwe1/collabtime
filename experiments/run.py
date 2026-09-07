@@ -8,6 +8,7 @@ import yaml
 import json
 import argparse
 import logging
+import random
 import time
 import os
 import sys
@@ -87,10 +88,10 @@ class ExperimentRunner:
         )
         self.logger = logging.getLogger('ExperimentRunner')
         
-    def create_warehouse_graph(self, warehouse_config: Dict) -> WarehouseGraph:
+    def create_warehouse_graph(self, warehouse_config: Dict, seed: Optional[int] = None) -> WarehouseGraph:
         """Create warehouse graph from configuration."""
         size = warehouse_config['size']
-        graph = WarehouseGraph(width=size[0], height=size[1])
+        graph = WarehouseGraph(width=size[0], height=size[1], rng=random.Random(seed))
         
         # Add storage regions
         for region in warehouse_config.get('storage_regions', []):
@@ -112,7 +113,9 @@ class ExperimentRunner:
         
         return graph
         
-    def generate_agent_positions(self, agents_config: Dict, warehouse_graph: WarehouseGraph) -> List[tuple]:
+    def generate_agent_positions(
+        self, agents_config: Dict, warehouse_graph: WarehouseGraph, seed: Optional[int] = None
+    ) -> List[tuple]:
         """Generate initial agent positions."""
         if isinstance(agents_config['initial_positions'], str) and agents_config['initial_positions'] == 'random':
             # Generate random positions
@@ -125,10 +128,10 @@ class ExperimentRunner:
                 raise ValueError("No valid starting positions found in warehouse graph!")
             
             positions = []
-            np.random.seed(42)  # For reproducibility
+            rng = np.random.default_rng(seed)
             
             for _ in range(agents_config['count']):
-                pos = valid_nodes[np.random.randint(len(valid_nodes))]
+                pos = valid_nodes[rng.integers(len(valid_nodes))]
                 positions.append(pos)
             return positions
         else:
@@ -200,8 +203,8 @@ class ExperimentRunner:
         start_time = datetime.now()
         
         try:
-            warehouse_graph = self.create_warehouse_graph(config['warehouse'])
-            agent_positions = self.generate_agent_positions(config['agents'], warehouse_graph)
+            warehouse_graph = self.create_warehouse_graph(config['warehouse'], seed=seed)
+            agent_positions = self.generate_agent_positions(config['agents'], warehouse_graph, seed=seed)
             
             duration = config['simulation']['duration']
             step_interval = config['simulation']['step_interval']

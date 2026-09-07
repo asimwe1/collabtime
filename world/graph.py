@@ -42,7 +42,8 @@ class WarehouseGraph:
                  shelf_block_width: int = SHELF_BLOCK_WIDTH, 
                  shelf_block_height: int = SHELF_BLOCK_HEIGHT,
                  perimeter_depth: int = PERIMETER_DEPTH,
-                 buffer_depth: int = BUFFER_DEPTH):
+                 buffer_depth: int = BUFFER_DEPTH,
+                 rng: random.Random = None):
         self.width = width
         self.height = height
         self.vertical_aisle_width = vertical_aisle_width
@@ -52,6 +53,7 @@ class WarehouseGraph:
         self.shelf_block_height = shelf_block_height
         self.perimeter_depth = perimeter_depth
         self.buffer_depth = buffer_depth
+        self.rng = rng or random.Random()
         
         self.graph = nx.Graph()
         self.regions = {}
@@ -202,7 +204,7 @@ class WarehouseGraph:
                     storage_nodes.append(n)
         
         if storage_nodes:
-            pick_locations = random.sample(storage_nodes, min(num_pick, len(storage_nodes)))
+            pick_locations = self.rng.sample(storage_nodes, min(num_pick, len(storage_nodes)))
             
             for node in pick_locations:
                 self.node_types[node] = 'pick_location'
@@ -217,7 +219,7 @@ class WarehouseGraph:
                     sortation_nodes.append(n)
         
         if sortation_nodes:
-            pack_stations = random.sample(sortation_nodes, min(num_pack, len(sortation_nodes)))
+            pack_stations = self.rng.sample(sortation_nodes, min(num_pack, len(sortation_nodes)))
             
             for node in pack_stations:
                 self.node_types[node] = 'pack_station'
@@ -305,7 +307,7 @@ class WarehouseGraph:
         """Get a random node from a specific region"""
         region_nodes = self.regions.get(region)
         if region_nodes:
-            return random.choice(list(region_nodes))
+            return self.rng.choice(list(region_nodes))
         return None
     
     def get_nodes_by_type(self, node_type: str) -> List[int]:
@@ -423,9 +425,11 @@ class WarehouseGraph:
         plt.show()
 
 
-def create_standard_warehouse(width: int = 20, height: int = 10) -> WarehouseGraph:
+def create_standard_warehouse(
+    width: int = 20, height: int = 10, rng: random.Random = None
+) -> WarehouseGraph:
     """Create a standard warehouse layout"""
-    return WarehouseGraph(width, height)
+    return WarehouseGraph(width, height, rng=rng)
 
 
 if __name__ == "__main__":

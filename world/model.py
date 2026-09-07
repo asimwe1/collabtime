@@ -21,11 +21,10 @@ except Exception:
         def step(self):
             # Randomly shuffle agents each step for fair task claiming
             shuffled_agents = list(self.agents)
-            random.shuffle(shuffled_agents)
+            self.model.random.shuffle(shuffled_agents)
             for agent in shuffled_agents:
                 if hasattr(agent, "step"):
                     agent.step()
-import random
 import time
 from typing import Dict, List, Any
 import math
@@ -69,7 +68,6 @@ class WarehouseDSMModel(Model):
         
         if seed is not None:
             self.random.seed(seed)
-            random.seed(seed)
         
         # Simulation parameters
         self.num_agents = n_agents if n_agents is not None else 16
@@ -80,7 +78,7 @@ class WarehouseDSMModel(Model):
         self.aoi_threshold_ms = aoi_threshold_ms
         # Event-driven Poisson arrivals: track time to next arrival (seconds)
         if self.task_arrival_rate > 0:
-            self._time_to_next_arrival_s = random.expovariate(self.task_arrival_rate)
+            self._time_to_next_arrival_s = self.random.expovariate(self.task_arrival_rate)
         else:
             self._time_to_next_arrival_s = float('inf')
         self.step_count = 0
@@ -97,7 +95,9 @@ class WarehouseDSMModel(Model):
         }
         
         # Create or accept warehouse graph
-        self.warehouse = warehouse_graph or create_standard_warehouse(warehouse_width, warehouse_height)
+        self.warehouse = warehouse_graph or create_standard_warehouse(
+            warehouse_width, warehouse_height, rng=self.random
+        )
         
         # Coordinator (control plane): strong consistency for tasks
         self.coordinator = coordinator if coordinator is not None else Coordinator()
@@ -352,7 +352,7 @@ class WarehouseDSMModel(Model):
         while self._time_to_next_arrival_s <= 0 and spawns_this_step < max_spawns:
             task_created = self._create_random_task()
             spawns_this_step += 1
-            next_exp = random.expovariate(lam)
+            next_exp = self.random.expovariate(lam)
             self._time_to_next_arrival_s += next_exp
             
             if task_created:
