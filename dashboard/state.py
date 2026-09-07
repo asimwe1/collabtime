@@ -53,15 +53,7 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=None, mode: 
         task_rate = DEFAULT_TASK_ARRIVAL_RATE
     step_dt = STEP_DURATION_S
 
-    dsm_instance = None
-    if mode == 'distributed':
-        try:
-            from dsm.router import DSMRouter, default_region_mapper
-            def node_to_shard(node_id: int, w: int = width, shards: int = num_shards) -> int:
-                return default_region_mapper(node_id, w, shards)
-            dsm_instance = DSMRouter(num_shards=num_shards, node_to_shard=node_to_shard)
-        except Exception:
-            dsm_instance = None
+    model_mode = 'p2p' if mode == 'distributed' else 'centralized'
 
     dashboard_logger = logging.getLogger('WarehouseDashboard')
     if not dashboard_logger.handlers:
@@ -91,8 +83,6 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=None, mode: 
     dashboard_logger.info(f"WAREHOUSE SIMULATION RUN - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     dashboard_logger.info("=" * 70)
     dashboard_logger.info(f"Memory Architecture: {mode.upper()}")
-    if mode == 'distributed':
-        dashboard_logger.info(f"  DSM Shards: {num_shards}")
     dashboard_logger.info(f"Warehouse Dimensions: {width} × {height} = {width * height} cells")
     dashboard_logger.info(f"Agents: {n_agents}")
     dashboard_logger.info(f"Step Duration: {step_dt:.3f}s ({int(step_dt * 1000)}ms)")
@@ -115,7 +105,7 @@ def create_initial_model(n_agents=8, width=20, height=15, task_rate=None, mode: 
         warehouse_height=height,
         task_arrival_rate=task_rate,
         step_duration_s=step_dt,
-        dsm=dsm_instance,
+        mode=model_mode,
         logger=dashboard_logger,
     )
 
@@ -174,4 +164,3 @@ def simulation_loop():
                                   f"{m.task_counter} tasks created, "
                                   f"{len(m.completed_tasks)} completed")
             time.sleep(0.5)  # Step every 0.5s for smoother, more realistic visualization
-

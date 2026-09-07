@@ -296,16 +296,6 @@ def reset_simulation(n_clicks, n_agents_val, width_val, height_val, task_rate_va
     running.set(False)
     auto_stop_deadline.set(None)
     with model_lock:
-        # Reset DSM first so old tasks disappear
-        try:
-            if hasattr(model.get(), 'dsm') and model.get().dsm is not None:
-                model.get().dsm.reset()
-            else:
-                from dsm.api import dsm as GLOBAL_DSM
-                GLOBAL_DSM.reset()
-        except Exception:
-            pass
-        
         m = create_initial_model(n_agents_val, width_val, height_val, task_rate_val, mode=mode_value)
         model.set(m)
     # Clear plots/store and set status
@@ -329,18 +319,9 @@ def reset_on_mode_change(mode_value, n_agents_val, width_val, height_val, task_r
     running.set(False)
     auto_stop_deadline.set(None)
     with model_lock:
-        try:
-            if hasattr(model.get(), 'dsm') and model.get().dsm is not None:
-                model.get().dsm.reset()
-            else:
-                from dsm.api import dsm as GLOBAL_DSM
-                GLOBAL_DSM.reset()
-        except Exception:
-            pass
         m = create_initial_model(n_agents_val, width_val, height_val, task_rate_val, mode=mode_value)
         model.set(m)
     empty_ts = {'t': [], 'tasks_created': [], 'tasks_completed': [], 'active_tasks': [], 'throughput': [], 'latency': []}
     status_style = {'padding': '6px 10px', 'borderRadius': '6px', 'backgroundColor': '#eee'}
     return 'Stopped', status_style, empty_ts
-
 
